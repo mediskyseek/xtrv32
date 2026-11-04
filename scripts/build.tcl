@@ -11,11 +11,11 @@ set out  [file normalize "$root/out"]
 set rtl  [file normalize "$root/rtl"]
 set part "xc7z020clg400-2"
 
-#---- top level selection (v0.3.1 multi-cycle core vs v0.4 pipeline) --------
+#---- top level selection (v0.5 pipeline is the default, v0.3 is legacy) ----
 if {[llength $argv] > 0} {
     set top [lindex $argv 0]
 } else {
-    set top "myxtrv32_top"
+    set top "myxtrv32_top_v4"
 }
 # optional second argument: "perf" enables the extended performance counters
 set perf_ext 0

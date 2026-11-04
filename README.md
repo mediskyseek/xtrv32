@@ -1,422 +1,130 @@
 # MyXTRV32
 
-> **当前版本：v0.5** —— 四级流水线 RV32IM，100 MHz，xc7z020clg400-2，
-> CoreMark 1.0 = **37.20**（CPI 1.256），CRC 全对，release WNS **+0.036 ns**。
->
-> | 版本 | 微架构 | CPI | CoreMark | 说明 |
-> |---|---|---|---|---|
-> | v0.3 | 多周期 FSM | 4.27 | 10.93 | M 扩展，无流水线 |
-> | v0.4 | 四级流水线 | 1.315 | 35.53 | IF / ID·EX / MEM / WB |
-> | **v0.5** | 四级流水线 | **1.256** | **37.20** | 冒险修复 + MUL 单拍 |
->
-> 当前 RTL 是 `rtl/myxtrv32_core_v4p.v`，顶层 `rtl/myxtrv32_top_v4.v`，
-> 构建命令 `vivado -mode batch -source scripts/build.tcl -tclargs myxtrv32_top_v4`。
-> 定向回归：`python scripts/sim_v4.py --mode all`（6 个 bench）。
-> 细节见 [release/v0.5/RELEASE.txt](release/v0.5/RELEASE.txt) 与
-> [doc/v0.5_hazards_and_mul.md](doc/v0.5_hazards_and_mul.md)。
->
-> **注意**：`rtl/myxtrv32_core_v4.v` 是早期三级流水线**骨架**（只有 ALU 子集，
-> 无 LOAD/STORE/BRANCH/M），没有被任何脚本引用，不要拿它当 v0.4 的实现。
->
-> 下面第 1 节起描述的是 **v0.3 多周期实现**，保留作为历史记录。
-
-## v0.3 架构（历史）
-
-一个面向 xc7z020（Zynq-7020）的极简 RISC-V 软核：**多周期 FSM、单发射、无流水线**，配套 BRAM ROM / BRAM RAM、UART TX 与 GPIO。v0.2 起支持 C 程序与 CoreMark，v0.3 加入 **M 扩展**，CoreMark 分数提升约 3.5 倍。
+面向 xc7z020（Zynq-7020）的 RISC-V 软核。当前主线是 **v0.5：四级流水线 RV32IM**，
+100 MHz 时序收敛，CoreMark 1.0 = **37.20**（CPI 1.256），CoreMark CRC 已在板上验证。
 
 ```
-RV32IM |  multi-cycle FSM  |  single issue  |  no pipeline
-no CSR |  no interrupt      |  no cache      |  no MMU
+RV32IM |  4-stage pipeline (IF | ID/EX | MEM | WB)  |  single issue
+no CSR |  no interrupt  |  no cache  |  no MMU  |  static not-taken
 ROM 64 KiB (BRAM)  |  RAM 64 KiB (BRAM)  |  UART TX 115200 8N1  |  2x LED
-CoreMark 1.0 (6k performance run) = 10.9 @ 100 MHz, CRC validated on hardware
 ```
 
-## 1. 特性
+## 1. 版本与实测性能
 
-| 项目 | 说明 |
-|------|------|
-| ISA | RV32IM（基础整数 + 乘除法） |
-| 微架构 | 7 状态 FSM：`FETCH → DECODE → EXEC → MEM/WB`，单发射，无流水线 |
-| CPI | ALU/分支/跳转 4 周期，load/store 5 周期，乘 5 周期，除 37 周期 |
-| 性能 | 100 MHz 下约 **25 MIPS**（理论值）；CoreMark 6k ≈ **10.9** |
-| CSR / 中断 / 异常 | 无（`ECALL/EBREAK` 作为停机指令，`FENCE` 作 NOP） |
-| 乘除法 | M 扩展硬件实现：`mul/mulh/mulhsu/mulhu` 1 拍（DSP48），`div/divu/rem/remu` 迭代 32 拍 |
-| Cache / MMU | 无 |
-| 指令总线 | 64 KiB BRAM ROM，同步读，1 拍延迟，独立数据读端口 |
-| 数据总线 | 64 KiB BRAM RAM（字节写使能）+ MMIO |
-| 外设 | UART TX（8N1）、2 位 LED、32 位自由计数器、64 位 mtime |
-| 复位 | 内部上电复位（约 0.65 ms），无需外部复位引脚 |
-| 顶层端口 | `clk`, `uart_tx`, `led_run`, `led_error` |
+| 版本 | 微架构 | CPI | CoreMark | WNS | 备注 |
+|---|---|---|---|---|---|
+| v0.3 | 多周期 FSM | 4.27 | 10.93 | — | M 扩展，无流水线 |
+| v0.4 | 四级流水线 | 1.315 | 35.53 | +0.044 | IF / ID·EX / MEM / WB |
+| **v0.5** | 四级流水线 | **1.256** | **37.20** | **+0.036** | 冒险修复 + MUL 单拍 |
 
-## 2. 目录结构
+板上数据（600 iterations，`python scripts/bench_hw.py`）：
 
 ```
-myxtrv32/
-├── rtl/
-│   ├── myxtrv32_core.v      # RV32IM 多周期 FSM 核（含 M 扩展）
-│   ├── myxtrv32_top.v       # 顶层：POR、地址译码、UART/GPIO/MTIME 挂载
-│   ├── myxtrv32_rom.v       # 指令 ROM —— 由脚本生成，勿手改
-│   ├── myxtrv32_ram.v       # 64 KiB 数据 RAM
-│   └── myxtrv32_uart_tx.v   # UART 发送器（8N1）
-├── sw/
-│   ├── crt0.S               # C 运行时启动（.data 拷贝 / .bss 清零 / call main）
-│   ├── libc.c               # memcpy/memset/strlen 等最小实现
-│   ├── uart.c               # UART 驱动 + ee_printf 的 uart_send_char
-│   ├── link.ld              # ROM 0x0 / RAM 0x10000
-│   ├── port/                # CoreMark 移植层（core_portme.[ch], ee_printf.c）
-│   ├── coremark/            # CoreMark 官方源码（未修改）
-│   ├── mtest.c              # M 扩展自测（48 组向量）—— 由脚本生成
-│   ├── sim_test.S           # 仿真用短固件
-│   └── build_coremark/      # 编译输出（elf/bin/dis）
-├── constr/
-│   └── myxtrv32.xdc         # 引脚与时钟约束
-├── scripts/
-│   ├── fetch_toolchain.py   # 下载 xPack RISC-V GCC 到 tools/
-│   ├── build_sw.py          # 编译固件（--mode coremark|sim|mtest）+ 生成 ROM
-│   ├── gen_mtest.py         # 生成 M 扩展测试向量与 mtest.c
-│   ├── gen_rom.py           # bin -> myxtrv32_rom.v
-│   ├── sim.py               # xsim 行为仿真
-│   ├── build.tcl            # Vivado 综合/实现/生成 bit
-│   └── build.py             # 一键调用（固件 + Vivado）
-├── sim/
-│   └── tb_myxtrv32.v        # 行为级 testbench（自带 UART 解码）
-├── tools/                   # RISC-V GCC（已下载）
-└── out/                     # bit / 报告输出
+[perf] cycles=1612696209 instret=1284402099 cpi_x100=125
+[perf] inst alu=672273828 load=229565989 store=49195949 br=257226333 mul=76140000 div=0
+[perf] br taken=125647471 not=99875745 flush=157350588
+[perf] stall ld=45832122 br=48971400 md=76140000 total=170943522 (10% of cycles)
 ```
 
-## 3. 内存映射
+资源：LUT 2339 / FF 661 / DSP 4 / BRAM 32（release 构建）。
+详细分解与优化记录见 [doc/v0.5_hazards_and_mul.md](doc/v0.5_hazards_and_mul.md)。
 
-| 地址范围 | 大小 | 设备 | 说明 |
-|----------|------|------|------|
-| `0x0000_0000–0x0000_FFFF` | 64 KiB | ROM | 取指 + 常量读取（双读端口） |
-| `0x0001_0000–0x0001_FFFF` | 64 KiB | RAM | 读写，字节/半字/字 |
-| `0x0002_0000` | 4 B | UART TX | 写：发送一个字节 |
-| `0x0002_0004` | 4 B | UART 状态 | 读：bit0 = busy |
-| `0x0002_0100` | 4 B | GPIO | 写/读：bit0 = `led_run`，bit1 = `led_error` |
-| `0x0002_0104` | 4 B | 计数器 | 读：32 位自由运行计数器 @100 MHz |
-| `0x0002_0200` | 4 B | MTIME 低 | 读低 32 位，同时锁存高 32 位 |
-| `0x0002_0204` | 4 B | MTIME 高 | 读锁存的高 32 位 |
-| `0x0002_0300` | 4 B | PERF | 读：已退休指令总数 |
-| `0x0002_0304` | 4 B | PERF | 读：ALU 指令数 |
-| `0x0002_0308` | 4 B | PERF | 读：LOAD 指令数 |
-| `0x0002_030C` | 4 B | PERF | 读：STORE 指令数 |
-| `0x0002_0310` | 4 B | PERF | 读：分支/跳转数 |
-| `0x0002_0314` | 4 B | PERF | 读：MUL 数 |
-| `0x0002_0318` | 4 B | PERF | 读：DIV 数 |
-
-栈顶 `0x0002_0000` 向下增长。
-
-## 4. 快速开始
-
-### 4.1 工具链（已完成）
-
-```powershell
-python scripts/fetch_toolchain.py          # 下载 xPack riscv-none-elf-gcc 15.2.0 到 tools/
-tools/xpack-riscv-none-elf-gcc-15.2.0-1-win32-x64/bin/riscv-none-elf-gcc.exe --version
-```
-
-### 4.2 编译固件
-
-```powershell
-python scripts/build_sw.py                  # CoreMark 镜像（默认）
-#   -> sw/build_coremark/fw.elf, fw.bin, fw.dis
-#   -> rtl/myxtrv32_rom.v
-
-python scripts/build_sw.py --mode sim       # 仿真 smoke test 镜像
-```
-
-CoreMark 编译选项（脚本内固定）：`-march=rv32i -mabi=ilp32 -O2 -nostdlib`，
-`-DPERFORMANCE_RUN=1 -DTOTAL_DATA_SIZE=6000 -DITERATIONS=0`，链接 `-lgcc`
-（软件乘除）。
-
-### 4.3 行为仿真（Vivado xsim）
-
-```powershell
-python scripts/sim.py
-```
-
-期望输出：
+## 2. 微架构
 
 ```
-[TB] starting MyXTRV32 simulation
-MyXTRV32 SIM OK
-DONE
-[TB] PASS: firmware printed the DONE line after 23 bytes
-[TB] LED toggles = 3
+pc ──► ROM(同步输出即 IF/ID) ──► ID·EX 组合级 ──► EX/MEM ──► MEM/WB ──► WB
+                                 译码/寄存器堆/前递/ALU/分支判定
 ```
 
-### 4.4 综合 / 实现 / 生成 bit
+| 机制 | 实现 |
+|---|---|
+| IF/ID | 不额外加指令寄存器，直接复用 ROM 的同步输出寄存器；只附加 `if_id_pc`/`if_id_valid` |
+| EX/MEM | `alu_r`、`mem_addr`、`mem_wdata`、`mem_wstrb`、`rd`、`class`、`valid` |
+| 存储器接口 | 地址/使能/写数据全部寄存后送 BRAM，保证端口只看到寄存器输出 |
+| ALU→ALU | EX/MEM 前递，1 级 mux |
+| LOAD→use | 停 1 拍后用 MEM/WB 前递（RAM 数据在 WB 拍有效）；只比较指令真正读取的源寄存器 |
+| MUL | 停 1 拍，低 32 位由 DSP 直送 EX/MEM；`MULH/MULHSU/MULHU` 再等 1 拍取寄存后的 64 位积 |
+| DIV | 32 次迭代，阻塞 ID/EX，EX/MEM 插气泡 |
+| 分支/跳转 | 在 ID/EX 判定，同沿冲刷 IF/ID；静态预测不跳转，每次 redirect 固定 1 拍 |
+| 乘法器保护 | load-use 冒泡期间禁止锁存操作数（否则前递拿到的是地址）；被冲刷的 MUL/DIV 不启动 |
 
-```powershell
+## 3. 目录结构
+
+```
+rtl/myxtrv32_core_v4p.v   四级流水线核心（当前主线）
+rtl/myxtrv32_top_v4.v     v0.5 顶层：PC/ROM/RAM/UART/GPIO/MTIME/PERF
+rtl/myxtrv32_rom.v        由固件生成的 ROM 镜像（build_sw.py 产生，不入库）
+rtl/myxtrv32_ram.v        64 KiB 数据 RAM
+rtl/myxtrv32_uart_tx.v    UART TX
+scripts/build.tcl         Vivado 非工程流程（综合+实现+bit）
+scripts/build.py          一步构建（固件 + bit）
+scripts/build_sw.py       编译固件并生成 ROM（--mode coremark|alu|mem|branch|muldiv|hazard|mulchain）
+scripts/sim_v4.py         Icarus 定向回归（6 个 bench）
+scripts/bench_hw.py       上板：下载 bit + 采集 UART + 解析 CoreMark/perf
+sw/                       测试程序与 CoreMark 移植
+doc/v0.5_hazards_and_mul.md   本次优化的分析与实测记录
+doc/v0.4_pipeline_cycles.md   v0.4 逐周期设计（历史）
+doc/v0.3_architecture.md      v0.3 多周期实现（历史归档）
+release/v0.5/             发布快照（RTL、bit、时序/资源报告、运行日志）
+```
+
+`rtl/myxtrv32_core_v4.v` 是早期三级流水线**骨架**（只有 ALU 子集），无脚本引用；
+`rtl/myxtrv32_core.v` / `myxtrv32_top.v` 是 v0.3 遗留，仅 `scripts/sim_iv.py` 使用。
+
+## 4. 构建、仿真与上板
+
+```bash
+# 固件 + 综合/实现/bit（默认 v0.5）
 python scripts/build.py
-#   -> out/myxtrv32_top.bit
-#   -> out/timing_summary.rpt, utilization.rpt, power.rpt, drc.rpt
+
+# 只重建固件与 ROM 镜像
+python scripts/build_sw.py --mode coremark
+
+# 带扩展性能计数器（CPI 分解）
+python scripts/build_sw.py --perf
+vivado -mode batch -source scripts/build.tcl -tclargs myxtrv32_top_v4 perf
+
+# 定向仿真回归（Icarus Verilog）
+python scripts/sim_v4.py --mode all
+
+# 上板测量
+python scripts/bench_hw.py --port COM12 --seconds 30 --tag run
 ```
 
-或直接用 Vivado（`build.tcl` 用的是单进程 in-memory 流程，不依赖 `launch_runs`
-子进程，批处理下更稳）：
+v0.3 的 UART 级联仿（`scripts/sim_iv.py`）仍然保留，用于跑 `mtest`/`sim` 镜像。
 
-```powershell
-D:\Xilinx\Vivado\2024.2\bin\vivado.bat -mode batch -source scripts/build.tcl
-```
+## 5. 内存映射
 
-想用 GUI 看代码/波形时，可以先生成常规工程再打开 `vivado/myxtrv32/myxtrv32.xpr`：
+| 区间 | 用途 |
+|---|---|
+| `0x0000_0000` | 64 KiB ROM（指令） |
+| `0x0001_0000` | 64 KiB RAM（数据） |
+| `0x0002_0000` | UART TX |
+| `0x0002_0100` | GPIO（LED） |
+| `0x0002_0200` | MTIME（64 位自由计数器） |
+| `0x0002_0300` | PERF 计数器（只读，32 位/个） |
 
-```powershell
-D:\Xilinx\Vivado\2024.2\bin\vivado.bat -mode batch -source scripts/create_project.tcl
-```
+PERF 偏移：`0x00` instret、`0x04` alu、`0x08` load、`0x0C` store、`0x10` 分支/跳转、
+`0x14` mul、`0x18` div、`0x1C` br_taken、`0x20` br_not、`0x24` stall_load_use、
+`0x28` stall_br_dep、`0x2C` stall_muldiv、`0x30` flush。
 
-### 4.5 下载到板子
+## 6. 引脚（xc7z020clg400-2）
 
-Vivado Hardware Manager：`Open Target → Auto Connect → Program Device`，选择
-`out/myxtrv32_top.bit`。
-
-或命令行（板子已连 JTAG）：
-
-```powershell
-D:\Xilinx\Vivado\2024.2\bin\vivado.bat -mode batch -source scripts/program.tcl
-```
-
-### 4.6 上板现象
-
-* **LED**：`led_run`（P18）每 0.5 s 翻转一次；`led_error`（N17）只在 CPU 停机或 RAM
-  自检失败时点亮。
-* **串口**：115200 8N1，TX 在扩展口 L14。上电后输出：
-
-```
-MyXTRV32 v0.1 -- RV32I multi-cycle soft core
-ROM 16 KiB | RAM 32 KiB | UART 115200 8N1
-LED blink + UART tick test running...
-
-tick 0
-tick 1
-tick 2
-...
-```
-
-## 5. 引脚约束
-
-来自 `IO_ZYNQ7020.xlsx`：
-
-| 信号 | 引脚 | 电平 |
-|------|------|------|
-| `clk`（100 MHz） | N18 (PL_CLK_MRCC) | LVCMOS33 |
-| `uart_tx` | L14（扩展口） | LVCMOS33 |
-| `led_run` | P18 | LVCMOS33 |
-| `led_error` | N17 | LVCMOS33 |
-
-> `uart_rx`（M15）本版未使用，核内无接收通路。
-> Bank35 在该板上为可配置电压，默认按 3.3 V（`LVCMOS33`）约束；若实测该 bank 为
-> 1.8 V，请把 xdc 里的 `LVCMOS33` 改为 `LVCMOS18`。
-
-## 6. 设计说明
-
-### 6.1 状态机
-
-```
-        ┌──────────────────────────────────────────┐
-        │                                          │
-        ▼                                          │
-  ┌──────────┐   ┌──────────┐   ┌────────┐   ┌─────────┐
-  │  FETCH   │──▶│  DECODE  │──▶│  EXEC  │──▶│   WB    │
-  └──────────┘   └──────────┘   └────────┘   └─────────┘
-                                     │             ▲
-                        ┌────────────┼─────────────┤
-                        ▼            ▼             │
-                   ┌─────────┐  ┌─────────┐        │
-                   │   MEM   │  │ MUL/DIV │────────┘
-                   └─────────┘  └─────────┘
-```
-
-* `FETCH`：`imem_addr = pc[15:2]`，ROM 同步读。
-* `DECODE`：锁存指令，寄存器堆组合读取。
-* `EXEC`：ALU / 分支判定 / 跳转目标 / 访存地址计算。
-* `MEM`：仅 load/store 经过，发出 `dmem_req/we/addr/data/wstrb`。
-* `ST_MUL`：DSP 乘法结果已锁存，这里做有符号高 32 位修正并写 `alu_r`。
-* `ST_DIV`：恢复余数法，32 拍移位减法。
-* `WB`：写回寄存器并更新 `pc`。
-
-存储器读延迟固定 1 拍，因此 `FETCH→DECODE` 与 `MEM→WB` 恰好对齐。
-
-### 6.2 为什么 ROM 有第二个读端口
-
-固件把字符串放在 `.rodata`（ROM 区），`lbu` 需要从数据端口读取常量。若 ROM 只有
-取指端口，`lbu` 会读到 0（本版开发中实际踩到过这个坑）。因此 ROM 被综合为
-简单双读端口 BRAM：`iaddr/idata` 供取指，`daddr/ddata` 供数据读。
-
-### 6.3 地址译码
-
-数据端口按 `addr[31:16]` 区分 ROM（`0x0000`）与 RAM（`0x0001`），MMIO 再按
-`addr[31:8]` 细分 `0x0002_00`（UART）/`0x0002_01`（GPIO）/`0x0002_02`（MTIME）。
-取指地址为 `pc[15:2]`（14 位，覆盖 64 KiB ROM）。
-
-### 6.4 MTIME
-
-`0x0002_0200` 是 64 位自由运行计数器（100 MHz）。读低 32 位时硬件顺便把高 32 位
-锁存到 `mtime_hi_l`，随后读 `0x0002_0204` 得到一致的高位，避免进位撕裂。
-
-### 6.5 M 扩展
-
-乘法用**一个** 32×32 无符号乘法器（DSP48，Vivado 推断 4 个 DSP）：
-
-```
-mul      = prod[31:0]
-mulhu    = prod[63:32]
-mulh     = prod[63:32] - (a<0 ? b : 0) - (b<0 ? a : 0)
-mulhsu   = prod[63:32] - (a<0 ? b : 0)
-```
-
-推导：把有符号操作数写成 `a = a_u - neg_a·2^32`，展开后高 32 位只剩上面两项修正。
-这样 4 条乘法指令共用同一个 DSP。
-
-乘法拆成两拍：`EXEC` 里把 DSP 输出锁进 `mul_full_r`，`ST_MUL` 再做 64 位修正。
-最初把两者放在同一拍，WNS 掉到 **-3.612 ns**（13.5 ns 路径），拆分后恢复 **+0.995 ns**。
-
-除法是 32 拍恢复余数法，有符号版本先取绝对值、做完无符号除法再修符号；
-除零返回 `q = -1, r = dividend`，`INT_MIN / -1` 按 RISC-V 规范返回 `INT_MIN`。
+| 信号 | 引脚 | 说明 |
+|---|---|---|
+| clk | N18 | 100 MHz 单端输入，`create_clock -period 10.000` |
+| uart_tx | L14 | 115200 8N1 |
+| led_run | P18 | 运行指示 |
+| led_error | N17 | 错误指示 |
 
 ## 7. 已知限制
 
-* 仅支持自然对齐的 load/store；非对齐访问不会陷入，行为为部分写入/读出。
-* 无中断/异常/CSR/特权模式，`ECALL/EBREAK` 直接停机。
-* 分支在 `EXEC` 判定、`WB` 更新 `pc`，因此每次跳转固定 4 周期，无延迟槽。
-* 指令与数据共用同一 ROM 内容，不支持自修改代码。
-* `clock()` 分辨率是 1 秒（`time_in_secs` 返回整数），CoreMark 打印的
-  `Iterations/Sec` 与分数为整数截断。
-* 除法是迭代实现（约 37 拍/条），高密度除法负载下 CPI 会明显上升。
+- 无 CSR、无中断/异常，`ECALL/EBREAK` 作为停机指令，`FENCE` 视为 NOP
+- 无 cache/MMU，取指与数据访问都是单周期同步 BRAM
+- 分支为静态不跳转，每次 taken 固定 1 拍惩罚
+- 性能计数器多路选择器与主数据通路共用 `dmem_rdata`，开启 `PERF_EXT` 会让 WNS 变成负值（-0.217 ns）
 
-## 8. 实测结果（xc7z020clg400-2，Vivado 2024.2）
+## 8. 历史版本
 
-### 8.1 资源占用
-
-| 资源 | 用量 | 占比（xc7z020） |
-|------|------|-----------------|
-| LUT | 2207（core 950 / ROM 1192 / RAM 51） | 4.1% |
-| FF | 844 | 0.79% |
-| BRAM36 | 32（ROM 16 + RAM 16） | 22.9% |
-| LUTRAM | 44（寄存器堆） | — |
-| DSP48 | 4（乘法器） | 1.8% |
-| 功耗 | 0.206 W（vector-less） | — |
-
-### 8.2 时序
-
-```
-Setup WNS = +0.995 ns   ->  Fmax ~ 111 MHz
-Hold  WHS = +0.101 ns
-```
-
-100 MHz 时钟下有约 1 ns 余量。注意乘法路径是拆成 `EXEC`（DSP 输出锁存）+
-`ST_MUL`（64 位修正）两拍后才收敛的；若合成一拍，WNS 为 **-3.612 ns**。
-
-### 8.3 验证
-
-| 项目 | 结果 |
-|------|------|
-| M 扩展自测（`--mode mtest`，48 向量 + 除零 + 溢出） | **PASS**：`M EXT PASS (48 vectors)` |
-| CoreMark 6k performance run（rv32im） | **CRC 全对**（`0xd4b0` / `0xbe52` / `0x5e47`） |
-| 综合 | 0 error，ROM 16xRAMB36 / RAM 16xRAMB36 / 4 DSP |
-| 实现 + DRC | 0 error |
-| 比特流 | `out/myxtrv32_top.bit`（约 1 MB） |
-
-> ROM 说明：若把未用区留 0，Vivado 会把整块 ROM 折叠成常量逻辑。
-> `gen_rom.py` 默认用 `--fill pattern` 给未用地址填上互不相同的标记值，使
-> 16384x32 全部落到 BRAM（16 个 RAMB36）。若要省资源，可改为 `--fill zero`。
-
-> 运行环境备注：本机在纯批处理会话里跑 `xsim -runall` 会报
-> `Could not open file mapping object (2)` 后崩溃（Windows 共享内存/DLL 环境问题），
-> 与设计无关；功能验证以实机为准。
-
-### 8.4 上板记录（2026-11-04）
-
-* JTAG：Digilent JTAG-SMT1 → `xc7z020` (idcode `23727093`)，`xsct` 下载
-  （`scripts/program_xsct.tcl`）。
-* v0.1：串口 banner + `tick` 每 0.5 s 递增，连续 8 分钟无丢字节。
-* v0.2：CoreMark 6k performance run 跑通，CRC 与官方一致。
-* v0.3：M 扩展自测 48 向量全过；CoreMark CRC 全对，分数 3.11 → 10.9。
-
-### 8.5 CoreMark 结果
-
-**v0.3（rv32im，硬件乘除，100 MHz）**
-
-```
-CoreMark Size    : 2000
-Total time (secs): 18
-Iterations       : 200
-Compiler flags   : -O2 rv32im
-seedcrc          : 0x8a02
-[0]crclist       : 0xd4b0
-[0]crcmatrix     : 0xbe52
-[0]crcstate      : 0x5e47
-Correct operation validated.
-```
-
-| 指标 | v0.2（软件乘除） | v0.3（M 扩展） | 提升 |
-|------|------------------|----------------|------|
-| CoreMark 分数 | 3.11 | **10.93** | 3.5× |
-| CoreMark/MHz | 0.031 | **0.109** | 3.5× |
-| 单次迭代耗时 | 32.1 M 周期 | 9.15 M 周期 | 3.5× |
-| 运行时间 | 12.85 s | 18.3 s | — |
-
-`Iterations/Sec` 打印为 11（整数截断），实际是 200/18.3 ≈ 10.93。
-
-分数仍受限于 4–5 CPI 的多周期结构；要再上一个台阶需要流水线（约 0.8 CoreMark/MHz），
-那是架构重写，不在当前版本范围。
-
-### 8.6 CPI 剖析（v0.3.1 性能计数器，实机测量）
-
-给核加了 `retire` 脉冲和指令分类计数（MMIO `0x0002_0300`），CoreMark 正式测量段实测：
-
-```
-[perf] cycles=1830823262 instret=428130900 cpi_x100=427
-[perf] alu=224089917 load=76521279 store=16398383 br=85741321 mul=25380000 div=0
-[perf] model_cycles=1830823262 actual=1830823262 gap=0
-[perf] share: alu=48% load=20% store=4% br=18% mul=6% div=0%
-```
-
-| 指标 | 数值 |
-|------|------|
-| 总周期 | 1.831 × 10⁹ |
-| 退休指令 | 4.281 × 10⁸ |
-| **平均 CPI** | **4.27** |
-| 每条指令模型周期 | 4/5 拍，与实际完全一致（gap = 0） |
-
-| 指令类 | 条数 | 占比 | 周期占比 |
-|--------|------|------|----------|
-| ALU | 224.1 M | 52.3% | 48% |
-| LOAD | 76.5 M | 17.9% | 20% |
-| STORE | 16.4 M | 3.8% | 4% |
-| 分支/跳转 | 85.7 M | 20.0% | 18% |
-| MUL | 25.4 M | 5.9% | 6% |
-| **DIV** | **0** | **0%** | **0%** |
-
-结论：
-
-1. **`gap = 0`**：多周期核没有冒险/停顿，所有周期都花在指令本身，CPI 完全由固定拍数决定。
-   流水线的收益就是把这 4.27 压到接近 1。
-2. **DIV = 0**：CoreMark 一次除法都没执行——CRC 用移位、矩阵用乘加，GCC 还把常量除法
-   优化成了乘法。**除法 37 拍的延迟对 CoreMark 完全无影响**，流水线里可以让 DIV 直接阻塞。
-3. **分支占 20%**，是第二大开销（18% 周期）。三级流水线里分支在 ID/EX 判定要冲刷 2 条，
-   是 CPI 的主要来源之一，值得优先做静态预测（BTFN）。
-4. **LOAD 占 18%**，load-use 冒险需要前递或停顿，是第二个主要来源。
-
-按 CPI 1.3–1.7 估算，流水线后 CoreMark 约 **27–36**，目标 20–30 可达。
-
-## 9. 版本
-
-* **v0.3.1** —— 加性能计数器：`retire` 脉冲 + ALU/LOAD/STORE/BR/ MUL/DIV 分类计数，
-  MMIO `0x0002_0300`；CoreMark 移植层在 `portable_fini` 打印 CPI 与分类统计。
-  实机测得 CPI = 4.27，`model == actual`（无额外停顿），DIV 计数为 0。
-* **v0.3** —— 加入 M 扩展：`mul/mulh/mulhsu/mulhu` 共用 1 个 DSP48（4 个 DSP），
-  高 32 位符号修正放在独立的 `ST_MUL` 拍；`div/divu/rem/remu` 为 32 拍恢复余数法，
-  支持除零与 `INT_MIN/-1` 语义。工具链切到 `-march=rv32im`。新增
-  `gen_mtest.py` / `mtest.c` 自测（48 向量）。实机：`M EXT PASS`，CoreMark
-  CRC 全对，分数 **10.93**（v0.2 的 3.5 倍），WNS +0.995 ns。
-* **v0.2** —— 扩展为可跑 C 程序与 CoreMark：ROM/RAM 各扩到 64 KiB、地址空间重划
-  （ROM `0x0` / RAM `0x10000` / MMIO `0x20000`）、64 位 MTIME、`crt0.S` + 最小
-  libc、CoreMark 移植层（`MEM_STATIC`、`ee_printf`、`clock()`）。实机 CoreMark
-  CRC 全部通过（`0xd4b0` / `0xbe52` / `0x5e47`），分数 ≈3.11 @100 MHz。
-  综合 WNS +1.145 ns，BRAM 32/140。
-* **v0.1** —— 首个可上板版本：RV32I 多周期核 + 16 KiB ROM + 32 KiB RAM + UART TX +
-  GPIO/LED。xsim 仿真通过，xc7z020clg400-2 综合实现通过（WNS +1.622 ns），
-  比特流已生成并在实机（xc7z020 + COM12）验证：banner 正常、`tick` 递增、LED 闪烁。
-  修复：`print_u32` 缺 NUL 终止导致多打印 `ra` 低字节；banner 多个 `.asciz` 导致只输出首行。
+- [v0.4 逐周期设计](doc/v0.4_pipeline_cycles.md)
+- [v0.3 多周期实现](doc/v0.3_architecture.md)

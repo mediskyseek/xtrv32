@@ -1,4 +1,8 @@
 //============================================================================
+//  UNUSED SKELETON -- history only.  The shipped core is
+//  rtl/myxtrv32_core_v4p.v; no build or simulation script references this
+//  file (it implements only LUI/AUIPC/OP-IMM/OP, no LOAD/STORE/BRANCH/M).
+//----------------------------------------------------------------------------
 //  MyXTRV32 v0.4  --  three-stage pipeline skeleton (ALU subset)
 //----------------------------------------------------------------------------
 //  Stage boundaries (see doc/v0.4_pipeline_cycles.md):

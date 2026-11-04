@@ -29,11 +29,12 @@ def main() -> int:
     log = ROOT / "out" / "vivado_build.log"
     log.parent.mkdir(exist_ok=True)
 
+    # -tclargs must come last: Vivado treats everything after it as user argv.
     cmd = [str(VIVADO), "-mode", "batch",
            "-source", str(ROOT / "scripts" / "build.tcl"),
            "-log", str(log),
-           "-journal", str(ROOT / "out" / "vivado.jou"),
-           "-nojournal"]
+           "-nojournal",
+           "-tclargs", "myxtrv32_top_v4"]
     print("+", " ".join(cmd), flush=True)
     return subprocess.run(cmd, cwd=ROOT).returncode
 
