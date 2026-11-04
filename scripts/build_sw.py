@@ -72,6 +72,8 @@ def main() -> int:
     ap.add_argument("--rom-out", default="rtl/myxtrv32_rom.v")
     ap.add_argument("-O", dest="opt", default="O2", help="optimisation level (O2/O3/Os)")
     ap.add_argument("--perf", action="store_true", help="enable PERF_EXT extended counters")
+    ap.add_argument("--iterations", type=int, default=0,
+                    help="CoreMark iterations (0 = auto, 1 = short trace run)")
     args = ap.parse_args()
 
     build = (ROOT / args.build_dir).resolve() if args.build_dir else (SW / f"build_{args.mode}").resolve()
@@ -105,7 +107,7 @@ def main() -> int:
         extra = [
             "-DPERFORMANCE_RUN=1",
             "-DTOTAL_DATA_SIZE=6000",
-            "-DITERATIONS=0",
+            f"-DITERATIONS={args.iterations}",
             '-DFLAGS_STR="-O2 rv32im"',
             f"-I{COREMARK}",
             f"-I{PORT}",
