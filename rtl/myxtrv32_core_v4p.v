@@ -45,7 +45,15 @@ module myxtrv32_core_v4p (
     output wire [31:0] dbg_pc,
     output wire        dbg_halt,
     output wire        retire,
-    output wire [2:0]  retire_cls
+    output wire [2:0]  retire_cls,
+
+    // performance events (one pulse per occurrence)
+    output wire        ev_flush,       // pc redirected (branch taken / jump)
+    output wire        ev_br_taken,    // conditional branch, taken
+    output wire        ev_br_not,      // conditional branch, not taken
+    output wire        ev_stall_ld,    // load->use stall cycle
+    output wire        ev_stall_br,    // branch-depends-on-load stall cycle
+    output wire        ev_stall_md     // mul/div stall cycle
 );
 
     //------------------------------------------------------------------
@@ -107,6 +115,7 @@ module myxtrv32_core_v4p (
     reg        mem_wb_we;
     reg        mem_wb_load;
     reg [2:0]  mem_wb_f3;
+    reg [2:0]  mem_wb_cls;
     reg        mem_wb_valid;
 
     //------------------------------------------------------------------
@@ -133,7 +142,7 @@ module myxtrv32_core_v4p (
     end
 
     assign retire     = mem_wb_valid;
-    assign retire_cls = ex_mem_cls;
+    assign retire_cls = mem_wb_cls;
 
     //------------------------------------------------------------------
     // Forwarding: EX/MEM (ALU) has priority, MEM/WB supplies load data
@@ -366,6 +375,39 @@ module myxtrv32_core_v4p (
     wire stall = stall_muldiv || stall_load_use || br_load_dep;
 
     //------------------------------------------------------------------
+    // Performance event outputs
+    //------------------------------------------------------------------
+    // Registered so the counters' clock-enable pins do not sit on the same
+    // combinational path as the branch compare / pc update.
+    reg ev_flush_r, ev_br_taken_r, ev_br_not_r;
+    reg ev_stall_ld_r, ev_stall_br_r, ev_stall_md_r;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            ev_flush_r    <= 1'b0;
+            ev_br_taken_r <= 1'b0;
+            ev_br_not_r   <= 1'b0;
+            ev_stall_ld_r <= 1'b0;
+            ev_stall_br_r <= 1'b0;
+            ev_stall_md_r <= 1'b0;
+        end else begin
+            ev_flush_r    <= redirect && !halt_r && !stall;
+            ev_br_taken_r <= is_branch && if_id_valid && br_cond && !stall;
+            ev_br_not_r   <= is_branch && if_id_valid && !br_cond && !stall;
+            ev_stall_ld_r <= stall_load_use;
+            ev_stall_br_r <= br_load_dep;
+            ev_stall_md_r <= stall_muldiv;
+        end
+    end
+
+    assign ev_flush     = ev_flush_r;
+    assign ev_br_taken  = ev_br_taken_r;
+    assign ev_br_not    = ev_br_not_r;
+    assign ev_stall_ld  = ev_stall_ld_r;
+    assign ev_stall_br  = ev_stall_br_r;
+    assign ev_stall_md  = ev_stall_md_r;
+
+    //------------------------------------------------------------------
     // MUL / DIV sequencing
     //------------------------------------------------------------------
     always @(posedge clk) begin
@@ -518,6 +560,7 @@ module myxtrv32_core_v4p (
             mem_wb_addr  <= 32'd0;
             mem_wb_load  <= 1'b0;
             mem_wb_f3    <= 3'd0;
+            mem_wb_cls   <= 3'd0;
         end else begin
             // always drain, so the instructions already in flight retire
             // even after halt has been asserted
@@ -528,6 +571,7 @@ module myxtrv32_core_v4p (
             mem_wb_addr  <= ex_mem_addr;
             mem_wb_load  <= ex_mem_load;
             mem_wb_f3    <= ex_mem_f3;
+            mem_wb_cls   <= ex_mem_cls;
         end
     end
 

@@ -45,7 +45,13 @@ module tb_v4_muldiv;
         .dbg_pc     (dbg_pc),
         .dbg_halt   (dbg_halt),
         .retire     (retire),
-        .retire_cls (retire_cls)
+        .retire_cls (retire_cls),
+        .ev_flush   (),
+        .ev_br_taken(),
+        .ev_br_not  (),
+        .ev_stall_ld(),
+        .ev_stall_br(),
+        .ev_stall_md()
     );
 
     integer cycles  = 0;

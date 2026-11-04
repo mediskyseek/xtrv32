@@ -56,6 +56,12 @@ module myxtrv32_top_v4 #(
     wire        dbg_halt;
     wire        retire;
     wire [2:0]  retire_cls;
+    wire        ev_flush;
+    wire        ev_br_taken;
+    wire        ev_br_not;
+    wire        ev_stall_ld;
+    wire        ev_stall_br;
+    wire        ev_stall_md;
 
     myxtrv32_core_v4p u_core (
         .clk        (clk),
@@ -71,7 +77,13 @@ module myxtrv32_top_v4 #(
         .dbg_pc     (dbg_pc),
         .dbg_halt   (dbg_halt),
         .retire     (retire),
-        .retire_cls (retire_cls)
+        .retire_cls (retire_cls),
+        .ev_flush   (ev_flush),
+        .ev_br_taken(ev_br_taken),
+        .ev_br_not  (ev_br_not),
+        .ev_stall_ld(ev_stall_ld),
+        .ev_stall_br(ev_stall_br),
+        .ev_stall_md(ev_stall_md)
     );
 
     //------------------------------------------------------------------
@@ -195,6 +207,12 @@ module myxtrv32_top_v4 #(
     reg [31:0] perf_br;
     reg [31:0] perf_mul;
     reg [31:0] perf_div;
+    reg [31:0] perf_btaken;
+    reg [31:0] perf_bnot;
+    reg [31:0] perf_st_ld;
+    reg [31:0] perf_st_br;
+    reg [31:0] perf_st_md;
+    reg [31:0] perf_flush;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -205,30 +223,50 @@ module myxtrv32_top_v4 #(
             perf_br    <= 32'd0;
             perf_mul   <= 32'd0;
             perf_div   <= 32'd0;
-        end else if (retire) begin
-            perf_inst <= perf_inst + 32'd1;
-            case (retire_cls)
-                3'd0: perf_alu   <= perf_alu   + 32'd1;
-                3'd1: perf_load  <= perf_load  + 32'd1;
-                3'd2: perf_store <= perf_store + 32'd1;
-                3'd3: perf_br    <= perf_br    + 32'd1;
-                3'd4: perf_mul   <= perf_mul   + 32'd1;
-                3'd5: perf_div   <= perf_div   + 32'd1;
-                default: ;
-            endcase
+            perf_btaken <= 32'd0;
+            perf_bnot  <= 32'd0;
+            perf_st_ld <= 32'd0;
+            perf_st_br <= 32'd0;
+            perf_st_md <= 32'd0;
+            perf_flush <= 32'd0;
+        end else begin
+            if (retire) begin
+                perf_inst <= perf_inst + 32'd1;
+                case (retire_cls)
+                    3'd0: perf_alu   <= perf_alu   + 32'd1;
+                    3'd1: perf_load  <= perf_load  + 32'd1;
+                    3'd2: perf_store <= perf_store + 32'd1;
+                    3'd3: perf_br    <= perf_br    + 32'd1;
+                    3'd4: perf_mul   <= perf_mul   + 32'd1;
+                    3'd5: perf_div   <= perf_div   + 32'd1;
+                    default: ;
+                endcase
+            end
+            if (ev_br_taken) perf_btaken <= perf_btaken + 32'd1;
+            if (ev_br_not)   perf_bnot   <= perf_bnot   + 32'd1;
+            if (ev_stall_ld) perf_st_ld  <= perf_st_ld  + 32'd1;
+            if (ev_stall_br) perf_st_br  <= perf_st_br  + 32'd1;
+            if (ev_stall_md) perf_st_md  <= perf_st_md  + 32'd1;
+            if (ev_flush)    perf_flush  <= perf_flush  + 32'd1;
         end
     end
 
     reg [31:0] perf_read;
     always @* begin
-        case (A[4:2])
-            3'd0: perf_read = perf_inst;
-            3'd1: perf_read = perf_alu;
-            3'd2: perf_read = perf_load;
-            3'd3: perf_read = perf_store;
-            3'd4: perf_read = perf_br;
-            3'd5: perf_read = perf_mul;
-            3'd6: perf_read = perf_div;
+        case (A[5:2])
+            4'd0:  perf_read = perf_inst;
+            4'd1:  perf_read = perf_alu;
+            4'd2:  perf_read = perf_load;
+            4'd3:  perf_read = perf_store;
+            4'd4:  perf_read = perf_br;
+            4'd5:  perf_read = perf_mul;
+            4'd6:  perf_read = perf_div;
+            4'd7:  perf_read = perf_btaken;
+            4'd8:  perf_read = perf_bnot;
+            4'd9:  perf_read = perf_st_ld;
+            4'd10: perf_read = perf_st_br;
+            4'd11: perf_read = perf_st_md;
+            4'd12: perf_read = perf_flush;
             default: perf_read = 32'd0;
         endcase
     end

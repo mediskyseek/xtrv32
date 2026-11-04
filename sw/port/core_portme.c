@@ -48,9 +48,17 @@ static CORETIMETYPE start_time_val, stop_time_val;
 #define PERF_BR    (*(volatile ee_u32 *)(PERF_BASE + 0x10u))
 #define PERF_MUL   (*(volatile ee_u32 *)(PERF_BASE + 0x14u))
 #define PERF_DIV   (*(volatile ee_u32 *)(PERF_BASE + 0x18u))
+#define PERF_BTAKEN (*(volatile ee_u32 *)(PERF_BASE + 0x1Cu))
+#define PERF_BNOT   (*(volatile ee_u32 *)(PERF_BASE + 0x20u))
+#define PERF_ST_LD  (*(volatile ee_u32 *)(PERF_BASE + 0x24u))
+#define PERF_ST_BR  (*(volatile ee_u32 *)(PERF_BASE + 0x28u))
+#define PERF_ST_MD  (*(volatile ee_u32 *)(PERF_BASE + 0x2Cu))
+#define PERF_FLUSH  (*(volatile ee_u32 *)(PERF_BASE + 0x30u))
 
 static ee_u32 s_inst, s_alu, s_load, s_store, s_br, s_mul, s_div;
 static ee_u32 e_inst, e_alu, e_load, e_store, e_br, e_mul, e_div;
+static ee_u32 s_btaken, s_bnot, s_stld, s_stbr, s_stmd, s_flush;
+static ee_u32 e_btaken, e_bnot, e_stld, e_stbr, e_stmd, e_flush;
 static ee_u32 run_cycles;
 
 /* percentage helper (64-bit intermediate, avoids the 32-bit overflow that
@@ -75,6 +83,12 @@ start_time(void)
     s_br    = PERF_BR;
     s_mul   = PERF_MUL;
     s_div   = PERF_DIV;
+    s_btaken = PERF_BTAKEN;
+    s_bnot   = PERF_BNOT;
+    s_stld   = PERF_ST_LD;
+    s_stbr   = PERF_ST_BR;
+    s_stmd   = PERF_ST_MD;
+    s_flush  = PERF_FLUSH;
 }
 
 void
@@ -88,6 +102,12 @@ stop_time(void)
     e_br    = PERF_BR;
     e_mul   = PERF_MUL;
     e_div   = PERF_DIV;
+    e_btaken = PERF_BTAKEN;
+    e_bnot   = PERF_BNOT;
+    e_stld   = PERF_ST_LD;
+    e_stbr   = PERF_ST_BR;
+    e_stmd   = PERF_ST_MD;
+    e_flush  = PERF_FLUSH;
     run_cycles = stop_time_val - start_time_val;
 }
 
@@ -133,7 +153,10 @@ portable_fini(core_portable *p)
 {
     p->portable_id = 0;
 
-    /* ---- pipeline-analysis report (cycles / instructions of the timed run) */
+    /* ---- pipeline performance report (v0.4p, 4-stage) ----
+       No fixed-cycle model any more: the counters below are direct hardware
+       events, so CPI = cycles/instret and the extra cycles decompose into
+       stalls + redirects + pipeline fill. */
     {
         ee_u32 inst  = e_inst  - s_inst;
         ee_u32 alu   = e_alu   - s_alu;
@@ -143,9 +166,16 @@ portable_fini(core_portable *p)
         ee_u32 mul   = e_mul   - s_mul;
         ee_u32 div   = e_div   - s_div;
 
-        /* cycles this core needs for each class (multi-cycle, no stalls) */
-        ee_u32 model = alu * 4u + load * 5u + store * 5u + br * 4u
-                       + mul * 5u + div * 37u;
+        ee_u32 btaken = e_btaken - s_btaken;
+        ee_u32 bnot   = e_bnot   - s_bnot;
+        ee_u32 stld   = e_stld   - s_stld;
+        ee_u32 stbr   = e_stbr   - s_stbr;
+        ee_u32 stmd   = e_stmd   - s_stmd;
+        ee_u32 flush  = e_flush  - s_flush;
+
+        /* every stall cycle delays one retirement, every flush wastes one
+           fetched slot: extra = cycles - instret should track these */
+        ee_u32 stalls = stld + stbr + stmd;
 
         unsigned long long cpi100 =
             inst ? (((unsigned long long)run_cycles * 100ull) / (unsigned long long)inst)
@@ -155,20 +185,18 @@ portable_fini(core_portable *p)
                   (unsigned long)run_cycles,
                   (unsigned long)inst,
                   (unsigned long)cpi100);
-        ee_printf("[perf] alu=%lu load=%lu store=%lu br=%lu mul=%lu div=%lu\n",
+        ee_printf("[perf] inst alu=%lu load=%lu store=%lu br=%lu mul=%lu div=%lu\n",
                   (unsigned long)alu, (unsigned long)load, (unsigned long)store,
                   (unsigned long)br, (unsigned long)mul, (unsigned long)div);
-        ee_printf("[perf] model_cycles=%lu actual=%lu gap=%lu\n",
-                  (unsigned long)model,
-                  (unsigned long)run_cycles,
-                  (unsigned long)(run_cycles - model));
-        ee_printf("[perf] share: alu=%lu%% load=%lu%% store=%lu%% br=%lu%% mul=%lu%% div=%lu%%\n",
-                  pct_of(alu * 4u, run_cycles),
-                  pct_of(load * 5u, run_cycles),
-                  pct_of(store * 5u, run_cycles),
-                  pct_of(br * 4u, run_cycles),
-                  pct_of(mul * 5u, run_cycles),
-                  pct_of(div * 37u, run_cycles));
+        ee_printf("[perf] br taken=%lu not=%lu flush=%lu\n",
+                  (unsigned long)btaken, (unsigned long)bnot, (unsigned long)flush);
+        ee_printf("[perf] stall ld=%lu br=%lu md=%lu total=%lu (%lu%% of cycles)\n",
+                  (unsigned long)stld, (unsigned long)stbr, (unsigned long)stmd,
+                  (unsigned long)stalls,
+                  pct_of(stalls, run_cycles));
+        ee_printf("[perf] overhead cycles=%lu (instret+stall+flush=%lu)\n",
+                  (unsigned long)(run_cycles - inst),
+                  (unsigned long)(stalls + flush));
     }
 
     GPIO_LED = 0;
