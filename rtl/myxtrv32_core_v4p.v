@@ -281,15 +281,20 @@ module myxtrv32_core_v4p (
     reg [31:0] st_data;
     reg [3:0]  st_strb;
 
+    // addr[1:0] = (rs1[1:0] + imm[1:0]) mod 4 -- a 2-bit adder instead of
+    // waiting for the full 32-bit carry chain.  This was the endpoint of the
+    // critical path (ex_mem_wstrb).
+    wire [1:0] st_addr_lo = a[1:0] + imm_s[1:0];
+
     always @* begin
         case (f3)
             3'b000: begin
                 st_data = {4{b[7:0]}};
-                st_strb = 4'b0001 << alu_out[1:0];
+                st_strb = 4'b0001 << st_addr_lo;
             end
             3'b001: begin
                 st_data = {2{b[15:0]}};
-                st_strb = alu_out[1] ? 4'b1100 : 4'b0011;
+                st_strb = st_addr_lo[1] ? 4'b1100 : 4'b0011;
             end
             default: begin
                 st_data = b;

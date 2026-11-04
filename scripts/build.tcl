@@ -47,7 +47,7 @@ report_utilization -file "$out/utilization_${top}_synth.rpt"
 opt_design -directive Explore
 place_design -directive Explore
 phys_opt_design -directive AggressiveExplore
-route_design -directive Explore
+route_design -directive AggressiveExplore
 
 write_checkpoint -force "$out/post_route_$top.dcp"
 
