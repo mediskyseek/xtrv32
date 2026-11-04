@@ -1,24 +1,24 @@
-# MyXTRV32 v0.2
+# MyXTRV32 v0.3
 
-一个面向 xc7z020（Zynq-7020）的极简 RV32I 软核：**多周期 FSM、单发射、无流水线**，配套 BRAM ROM / BRAM RAM、UART TX 与 GPIO。v0.2 起支持 C 程序与 **CoreMark**，实机验证 CRC 全对。
+一个面向 xc7z020（Zynq-7020）的极简 RISC-V 软核：**多周期 FSM、单发射、无流水线**，配套 BRAM ROM / BRAM RAM、UART TX 与 GPIO。v0.2 起支持 C 程序与 CoreMark，v0.3 加入 **M 扩展**，CoreMark 分数提升约 3.5 倍。
 
 ```
-RV32I  |  multi-cycle FSM  |  single issue  |  no pipeline
+RV32IM |  multi-cycle FSM  |  single issue  |  no pipeline
 no CSR |  no interrupt      |  no cache      |  no MMU
 ROM 64 KiB (BRAM)  |  RAM 64 KiB (BRAM)  |  UART TX 115200 8N1  |  2x LED
-CoreMark 1.0 (6k performance run) validated on hardware
+CoreMark 1.0 (6k performance run) = 10.9 @ 100 MHz, CRC validated on hardware
 ```
 
 ## 1. 特性
 
 | 项目 | 说明 |
 |------|------|
-| ISA | RV32I 基础整数指令集（含 `LUI/AUIPC/JAL/JALR/BRANCH/LOAD/STORE/OP-IMM/OP/FENCE`） |
-| 微架构 | 5 状态 FSM：`FETCH → DECODE → EXEC → MEM → WB`，单发射，无流水线 |
-| CPI | ALU/分支/跳转 4 周期，load/store 5 周期 |
-| 性能 | 100 MHz 下约 **25 MIPS**（理论值）；CoreMark 6k ≈ **3.1**（软件乘除） |
+| ISA | RV32IM（基础整数 + 乘除法） |
+| 微架构 | 7 状态 FSM：`FETCH → DECODE → EXEC → MEM/WB`，单发射，无流水线 |
+| CPI | ALU/分支/跳转 4 周期，load/store 5 周期，乘 5 周期，除 37 周期 |
+| 性能 | 100 MHz 下约 **25 MIPS**（理论值）；CoreMark 6k ≈ **10.9** |
 | CSR / 中断 / 异常 | 无（`ECALL/EBREAK` 作为停机指令，`FENCE` 作 NOP） |
-| 乘除法 | 无 M 扩展，由 libgcc 软件模拟（`__mulsi3/__divsi3`…） |
+| 乘除法 | M 扩展硬件实现：`mul/mulh/mulhsu/mulhu` 1 拍（DSP48），`div/divu/rem/remu` 迭代 32 拍 |
 | Cache / MMU | 无 |
 | 指令总线 | 64 KiB BRAM ROM，同步读，1 拍延迟，独立数据读端口 |
 | 数据总线 | 64 KiB BRAM RAM（字节写使能）+ MMIO |
@@ -31,7 +31,7 @@ CoreMark 1.0 (6k performance run) validated on hardware
 ```
 myxtrv32/
 ├── rtl/
-│   ├── myxtrv32_core.v      # RV32I 多周期 FSM 核
+│   ├── myxtrv32_core.v      # RV32IM 多周期 FSM 核（含 M 扩展）
 │   ├── myxtrv32_top.v       # 顶层：POR、地址译码、UART/GPIO/MTIME 挂载
 │   ├── myxtrv32_rom.v       # 指令 ROM —— 由脚本生成，勿手改
 │   ├── myxtrv32_ram.v       # 64 KiB 数据 RAM
@@ -43,13 +43,15 @@ myxtrv32/
 │   ├── link.ld              # ROM 0x0 / RAM 0x10000
 │   ├── port/                # CoreMark 移植层（core_portme.[ch], ee_printf.c）
 │   ├── coremark/            # CoreMark 官方源码（未修改）
+│   ├── mtest.c              # M 扩展自测（48 组向量）—— 由脚本生成
 │   ├── sim_test.S           # 仿真用短固件
 │   └── build_coremark/      # 编译输出（elf/bin/dis）
 ├── constr/
 │   └── myxtrv32.xdc         # 引脚与时钟约束
 ├── scripts/
 │   ├── fetch_toolchain.py   # 下载 xPack RISC-V GCC 到 tools/
-│   ├── build_sw.py          # 编译固件（--mode coremark|sim）+ 生成 ROM Verilog
+│   ├── build_sw.py          # 编译固件（--mode coremark|sim|mtest）+ 生成 ROM
+│   ├── gen_mtest.py         # 生成 M 扩展测试向量与 mtest.c
 │   ├── gen_rom.py           # bin -> myxtrv32_rom.v
 │   ├── sim.py               # xsim 行为仿真
 │   ├── build.tcl            # Vivado 综合/实现/生成 bit
@@ -190,16 +192,19 @@ tick 2
   │  FETCH   │──▶│  DECODE  │──▶│  EXEC  │──▶│   WB    │
   └──────────┘   └──────────┘   └────────┘   └─────────┘
                                      │             ▲
-                                     ▼             │
-                                ┌─────────┐        │
-                                │   MEM   │────────┘
-                                └─────────┘
+                        ┌────────────┼─────────────┤
+                        ▼            ▼             │
+                   ┌─────────┐  ┌─────────┐        │
+                   │   MEM   │  │ MUL/DIV │────────┘
+                   └─────────┘  └─────────┘
 ```
 
-* `FETCH`：`imem_addr = pc[13:2]`，ROM 同步读。
+* `FETCH`：`imem_addr = pc[15:2]`，ROM 同步读。
 * `DECODE`：锁存指令，寄存器堆组合读取。
 * `EXEC`：ALU / 分支判定 / 跳转目标 / 访存地址计算。
 * `MEM`：仅 load/store 经过，发出 `dmem_req/we/addr/data/wstrb`。
+* `ST_MUL`：DSP 乘法结果已锁存，这里做有符号高 32 位修正并写 `alu_r`。
+* `ST_DIV`：恢复余数法，32 拍移位减法。
 * `WB`：写回寄存器并更新 `pc`。
 
 存储器读延迟固定 1 拍，因此 `FETCH→DECODE` 与 `MEM→WB` 恰好对齐。
@@ -221,15 +226,35 @@ tick 2
 `0x0002_0200` 是 64 位自由运行计数器（100 MHz）。读低 32 位时硬件顺便把高 32 位
 锁存到 `mtime_hi_l`，随后读 `0x0002_0204` 得到一致的高位，避免进位撕裂。
 
+### 6.5 M 扩展
+
+乘法用**一个** 32×32 无符号乘法器（DSP48，Vivado 推断 4 个 DSP）：
+
+```
+mul      = prod[31:0]
+mulhu    = prod[63:32]
+mulh     = prod[63:32] - (a<0 ? b : 0) - (b<0 ? a : 0)
+mulhsu   = prod[63:32] - (a<0 ? b : 0)
+```
+
+推导：把有符号操作数写成 `a = a_u - neg_a·2^32`，展开后高 32 位只剩上面两项修正。
+这样 4 条乘法指令共用同一个 DSP。
+
+乘法拆成两拍：`EXEC` 里把 DSP 输出锁进 `mul_full_r`，`ST_MUL` 再做 64 位修正。
+最初把两者放在同一拍，WNS 掉到 **-3.612 ns**（13.5 ns 路径），拆分后恢复 **+0.995 ns**。
+
+除法是 32 拍恢复余数法，有符号版本先取绝对值、做完无符号除法再修符号；
+除零返回 `q = -1, r = dividend`，`INT_MIN / -1` 按 RISC-V 规范返回 `INT_MIN`。
+
 ## 7. 已知限制
 
 * 仅支持自然对齐的 load/store；非对齐访问不会陷入，行为为部分写入/读出。
-* 无 `M` 扩展：乘除法由 libgcc 软件模拟，CoreMark 分数因此偏低（见 8.5）。
 * 无中断/异常/CSR/特权模式，`ECALL/EBREAK` 直接停机。
 * 分支在 `EXEC` 判定、`WB` 更新 `pc`，因此每次跳转固定 4 周期，无延迟槽。
 * 指令与数据共用同一 ROM 内容，不支持自修改代码。
 * `clock()` 分辨率是 1 秒（`time_in_secs` 返回整数），CoreMark 打印的
   `Iterations/Sec` 与分数为整数截断。
+* 除法是迭代实现（约 37 拍/条），高密度除法负载下 CPI 会明显上升。
 
 ## 8. 实测结果（xc7z020clg400-2，Vivado 2024.2）
 
@@ -237,30 +262,32 @@ tick 2
 
 | 资源 | 用量 | 占比（xc7z020） |
 |------|------|-----------------|
-| LUT | 1662（core 573 / ROM 1011 / RAM 60） | 3.1% |
-| FF | 582 | 0.55% |
+| LUT | 2207（core 950 / ROM 1192 / RAM 51） | 4.1% |
+| FF | 844 | 0.79% |
 | BRAM36 | 32（ROM 16 + RAM 16） | 22.9% |
 | LUTRAM | 44（寄存器堆） | — |
-| DSP | 0 | 0% |
-| 功耗 | 0.191 W（vector-less） | — |
+| DSP48 | 4（乘法器） | 1.8% |
+| 功耗 | 0.206 W（vector-less） | — |
 
 ### 8.2 时序
 
 ```
-Setup WNS = +1.145 ns   ->  Fmax ~ 113 MHz
-Hold  WHS = +0.057 ns
+Setup WNS = +0.995 ns   ->  Fmax ~ 111 MHz
+Hold  WHS = +0.101 ns
 ```
 
-100 MHz 时钟下有 1.1 ns 余量。
+100 MHz 时钟下有约 1 ns 余量。注意乘法路径是拆成 `EXEC`（DSP 输出锁存）+
+`ST_MUL`（64 位修正）两拍后才收敛的；若合成一拍，WNS 为 **-3.612 ns**。
 
 ### 8.3 验证
 
 | 项目 | 结果 |
 |------|------|
-| 行为级仿真（xsim，RTL + 自制 UART 解码 tb） | PASS（v0.1 基线；当前会话 xsim 环境异常，见下注） |
-| 综合 | 0 error，ROM 16xRAMB36 / RAM 16xRAMB36 |
+| M 扩展自测（`--mode mtest`，48 向量 + 除零 + 溢出） | **PASS**：`M EXT PASS (48 vectors)` |
+| CoreMark 6k performance run（rv32im） | **CRC 全对**（`0xd4b0` / `0xbe52` / `0x5e47`） |
+| 综合 | 0 error，ROM 16xRAMB36 / RAM 16xRAMB36 / 4 DSP |
 | 实现 + DRC | 0 error |
-| 比特流 | `out/myxtrv32_top.bit`（约 960 KB） |
+| 比特流 | `out/myxtrv32_top.bit`（约 1 MB） |
 
 > ROM 说明：若把未用区留 0，Vivado 会把整块 ROM 折叠成常量逻辑。
 > `gen_rom.py` 默认用 `--fill pattern` 给未用地址填上互不相同的标记值，使
@@ -276,41 +303,43 @@ Hold  WHS = +0.057 ns
   （`scripts/program_xsct.tcl`）。
 * v0.1：串口 banner + `tick` 每 0.5 s 递增，连续 8 分钟无丢字节。
 * v0.2：CoreMark 6k performance run 跑通，CRC 与官方一致。
+* v0.3：M 扩展自测 48 向量全过；CoreMark CRC 全对，分数 3.11 → 10.9。
 
-### 8.5 CoreMark 结果（v0.2，rv32i 软件乘除，100 MHz）
+### 8.5 CoreMark 结果
+
+**v0.3（rv32im，硬件乘除，100 MHz）**
 
 ```
-6k performance run parameters for coremark.
 CoreMark Size    : 2000
-Total ticks      : 1285332880
-Total time (secs): 12
-Iterations/Sec   : 3
-Iterations       : 40
-Compiler version : riscv-none-elf-gcc 15.2.0
-Compiler flags   : -O2 rv32i
-Memory location  : STATIC
+Total time (secs): 18
+Iterations       : 200
+Compiler flags   : -O2 rv32im
 seedcrc          : 0x8a02
 [0]crclist       : 0xd4b0
 [0]crcmatrix     : 0xbe52
 [0]crcstate      : 0x5e47
-[0]crcfinal      : 0xdd86
 Correct operation validated.
 ```
 
-| 指标 | 数值 |
-|------|------|
-| 运行时间 | 12.85 s（≥10 s，合法） |
-| 迭代次数 | 40 |
-| CoreMark 分数 | ≈ **3.11**（40 / 12.85 s） |
-| CoreMark/MHz | ≈ **0.031** |
-| 单次迭代周期 | 32.1 M 周期（40 迭代 / 1.285e9 周期） |
+| 指标 | v0.2（软件乘除） | v0.3（M 扩展） | 提升 |
+|------|------------------|----------------|------|
+| CoreMark 分数 | 3.11 | **10.93** | 3.5× |
+| CoreMark/MHz | 0.031 | **0.109** | 3.5× |
+| 单次迭代耗时 | 32.1 M 周期 | 9.15 M 周期 | 3.5× |
+| 运行时间 | 12.85 s | 18.3 s | — |
 
-分数偏低的主因是 **乘除法走 libgcc 软件模拟**：CoreMark 的 CRC、链表和矩阵
-运算里 32 位乘法密度很高，软件 `__mulsi3` 每次约 30–50 条指令。加 M 扩展
-（第 3 步）预计能提升 3–5 倍。
+`Iterations/Sec` 打印为 11（整数截断），实际是 200/18.3 ≈ 10.93。
+
+分数仍受限于 4–5 CPI 的多周期结构；要再上一个台阶需要流水线（约 0.8 CoreMark/MHz），
+那是架构重写，不在当前版本范围。
 
 ## 9. 版本
 
+* **v0.3** —— 加入 M 扩展：`mul/mulh/mulhsu/mulhu` 共用 1 个 DSP48（4 个 DSP），
+  高 32 位符号修正放在独立的 `ST_MUL` 拍；`div/divu/rem/remu` 为 32 拍恢复余数法，
+  支持除零与 `INT_MIN/-1` 语义。工具链切到 `-march=rv32im`。新增
+  `gen_mtest.py` / `mtest.c` 自测（48 向量）。实机：`M EXT PASS`，CoreMark
+  CRC 全对，分数 **10.93**（v0.2 的 3.5 倍），WNS +0.995 ns。
 * **v0.2** —— 扩展为可跑 C 程序与 CoreMark：ROM/RAM 各扩到 64 KiB、地址空间重划
   （ROM `0x0` / RAM `0x10000` / MMIO `0x20000`）、64 位 MTIME、`crt0.S` + 最小
   libc、CoreMark 移植层（`MEM_STATIC`、`ee_printf`、`clock()`）。实机 CoreMark

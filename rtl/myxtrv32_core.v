@@ -48,7 +48,9 @@ module myxtrv32_core (
                      ST_EXEC   = 3'd2,
                      ST_MEM    = 3'd3,
                      ST_WB     = 3'd4,
-                     ST_HALT   = 3'd5;
+                     ST_HALT   = 3'd5,
+                     ST_DIV    = 3'd6,
+                     ST_MUL    = 3'd7;
 
     //------------------------------------------------------------------
     // Architectural state
@@ -106,6 +108,47 @@ module myxtrv32_core (
     reg        d_branch_w;
     reg        d_jal_w;
     reg        d_jalr_w;
+    reg        d_div_w;
+    reg        d_mul_w;
+
+    //------------------------------------------------------------------
+    // M extension: one unsigned 32x32 multiplier (DSP48), high-word
+    // corrections for the signed variants are done in ST_MUL so that the
+    // DSP and the 64-bit adders do not share a single clock period.
+    //------------------------------------------------------------------
+    wire [63:0] mul_full_w = rs1_v * rs2_v;
+
+    reg [63:0] mul_full_r;
+    reg [31:0] mul_a_r;
+    reg [31:0] mul_b_r;
+    reg [2:0]  mul_f3_r;
+
+    wire [31:0] mul_res_w =
+        (mul_f3_r == 3'b000) ? mul_full_r[31:0] :
+        (mul_f3_r == 3'b001) ? (mul_full_r[63:32]
+                                - (mul_a_r[31] ? mul_b_r : 32'd0)
+                                - (mul_b_r[31] ? mul_a_r : 32'd0)) :
+        (mul_f3_r == 3'b010) ? (mul_full_r[63:32]
+                                - (mul_a_r[31] ? mul_b_r : 32'd0)) :
+                               mul_full_r[63:32];
+
+    //------------------------------------------------------------------
+    // Divide unit state (iterative, 32 steps)
+    //------------------------------------------------------------------
+    reg [31:0] div_a;         // dividend (shifting left)
+    reg [31:0] div_b;         // divisor (absolute value)
+    reg [32:0] div_r;         // partial remainder
+    reg [31:0] div_q;         // quotient
+    reg [5:0]  div_cnt;
+    reg        div_is_rem;
+    reg        div_neg_q;
+    reg        div_neg_r;
+
+    wire [32:0] div_r_shift = {div_r[31:0], div_a[31]};
+    wire [32:0] div_r_sub   = div_r_shift - {1'b0, div_b};
+    wire        div_ge      = (div_r_shift >= {1'b0, div_b});
+    wire [31:0] div_q_final = div_neg_q ? (~div_q + 32'd1) : div_q;
+    wire [31:0] div_r_final = div_neg_r ? (~div_r[31:0] + 32'd1) : div_r[31:0];
 
     always @* begin
         alu_w        = 32'd0;
@@ -116,6 +159,8 @@ module myxtrv32_core (
         d_branch_w   = 1'b0;
         d_jal_w      = 1'b0;
         d_jalr_w     = 1'b0;
+        d_div_w      = 1'b0;
+        d_mul_w      = 1'b0;
 
         case (opc)
             //-------------------------------------------------- LUI
@@ -183,18 +228,33 @@ module myxtrv32_core (
 
             //-------------------------------------------------- OP
             7'b0110011: begin
-                case (f3)
-                    3'b000: alu_w = f7[5] ? (rs1_v - rs2_v) : (rs1_v + rs2_v);
-                    3'b010: alu_w = {31'd0, ($signed(rs1_v) < $signed(rs2_v))};
-                    3'b011: alu_w = {31'd0, (rs1_v < rs2_v)};
-                    3'b100: alu_w = rs1_v ^ rs2_v;
-                    3'b110: alu_w = rs1_v | rs2_v;
-                    3'b111: alu_w = rs1_v & rs2_v;
-                    3'b001: alu_w = rs1_v << rs2_v[4:0];
-                    3'b101: alu_w = f7[5] ? ($signed(rs1_v) >>> rs2_v[4:0])
-                                          : (rs1_v >> rs2_v[4:0]);
-                    default: alu_w = 32'd0;
-                endcase
+                if (f7 == 7'b0000001) begin
+                    //----------------------------- M extension
+                    case (f3)
+                        3'b000, 3'b001, 3'b010, 3'b011: begin
+                            d_mul_w = 1'b1;            // MUL/MULH/MULHSU/MULHU
+                            alu_w   = 32'd0;
+                        end
+                        3'b100, 3'b101, 3'b110, 3'b111: begin
+                            d_div_w = 1'b1;            // DIV/DIVU/REM/REMU
+                            alu_w   = 32'd0;
+                        end
+                        default: alu_w = 32'd0;
+                    endcase
+                end else begin
+                    case (f3)
+                        3'b000: alu_w = f7[5] ? (rs1_v - rs2_v) : (rs1_v + rs2_v);
+                        3'b010: alu_w = {31'd0, ($signed(rs1_v) < $signed(rs2_v))};
+                        3'b011: alu_w = {31'd0, (rs1_v < rs2_v)};
+                        3'b100: alu_w = rs1_v ^ rs2_v;
+                        3'b110: alu_w = rs1_v | rs2_v;
+                        3'b111: alu_w = rs1_v & rs2_v;
+                        3'b001: alu_w = rs1_v << rs2_v[4:0];
+                        3'b101: alu_w = f7[5] ? ($signed(rs1_v) >>> rs2_v[4:0])
+                                              : (rs1_v >> rs2_v[4:0]);
+                        default: alu_w = 32'd0;
+                    endcase
+                end
             end
 
             //-------------------------------------------------- FENCE / SYSTEM
@@ -282,6 +342,18 @@ module myxtrv32_core (
             reg_we_r       <= 1'b0;
             rd_r           <= 5'd0;
             halt_r         <= 1'b0;
+            div_a          <= 32'd0;
+            div_b          <= 32'd0;
+            div_r          <= 33'd0;
+            div_q          <= 32'd0;
+            div_cnt        <= 6'd0;
+            div_is_rem     <= 1'b0;
+            div_neg_q      <= 1'b0;
+            div_neg_r      <= 1'b0;
+            mul_full_r     <= 64'd0;
+            mul_a_r        <= 32'd0;
+            mul_b_r        <= 32'd0;
+            mul_f3_r       <= 3'd0;
         end else if (halt_r) begin
             // Core halted (EBREAK/ECALL): freeze PC, registers and the
             // memory interface.  Keeping this outside the case statement
@@ -322,10 +394,65 @@ module myxtrv32_core (
                     if (opc == 7'b1110011) begin        // ECALL / EBREAK
                         halt_r <= 1'b1;
                         state  <= ST_HALT;
+                    end else if (d_div_w) begin
+                        //-------------------------------- M extension divide
+                        div_is_rem <= f3[1];
+                        div_cnt    <= 6'd32;
+                        div_q      <= 32'd0;
+                        div_r      <= 33'd0;
+                        if (!f3[0]) begin
+                            // signed: use absolute values, remember the signs
+                            div_a     <= rs1_v[31] ? (~rs1_v + 32'd1) : rs1_v;
+                            div_b     <= rs2_v[31] ? (~rs2_v + 32'd1) : rs2_v;
+                            div_neg_q <= rs1_v[31] ^ rs2_v[31];
+                            div_neg_r <= rs1_v[31];
+                        end else begin
+                            div_a     <= rs1_v;
+                            div_b     <= rs2_v;
+                            div_neg_q <= 1'b0;
+                            div_neg_r <= 1'b0;
+                        end
+
+                        if (rs2_v == 32'd0) begin
+                            // division by zero: q = -1, r = dividend
+                            alu_r <= f3[1] ? rs1_v : 32'hFFFFFFFF;
+                            state <= ST_WB;
+                        end else begin
+                            state <= ST_DIV;
+                        end
+                    end else if (d_mul_w) begin
+                        //-------------------------------- M extension multiply
+                        // the DSP output is captured here; the signed
+                        // high-word correction happens in ST_MUL
+                        mul_full_r <= mul_full_w;
+                        mul_a_r    <= rs1_v;
+                        mul_b_r    <= rs2_v;
+                        mul_f3_r   <= f3;
+                        state      <= ST_MUL;
                     end else if (d_load_w || d_store_w) begin
                         state  <= ST_MEM;
                     end else begin
                         state  <= ST_WB;
+                    end
+                end
+
+                //------------------------------------------------ MUL
+                ST_MUL: begin
+                    alu_r <= mul_res_w;
+                    state <= ST_WB;
+                end
+
+                //------------------------------------------------ DIV
+                // Restoring division, one quotient bit per cycle (32 steps).
+                ST_DIV: begin
+                    if (div_cnt == 6'd0) begin
+                        alu_r <= div_is_rem ? div_r_final : div_q_final;
+                        state <= ST_WB;
+                    end else begin
+                        div_r   <= div_ge ? div_r_sub : div_r_shift;
+                        div_q   <= {div_q[30:0], div_ge};
+                        div_a   <= {div_a[30:0], 1'b0};
+                        div_cnt <= div_cnt - 6'd1;
                     end
                 end
 

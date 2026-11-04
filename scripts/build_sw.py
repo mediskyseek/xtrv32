@@ -67,7 +67,7 @@ def coremark_sources() -> list[Path]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["coremark", "sim"], default="coremark")
+    ap.add_argument("--mode", choices=["coremark", "sim", "mtest"], default="coremark")
     ap.add_argument("--build-dir", default=None)
     ap.add_argument("--rom-out", default="rtl/myxtrv32_rom.v")
     ap.add_argument("-O", dest="opt", default="O2", help="optimisation level (O2/O3/Os)")
@@ -86,7 +86,7 @@ def main() -> int:
     binf = build / "fw.bin"
 
     common = [
-        "-march=rv32i", "-mabi=ilp32",
+        "-march=rv32im", "-mabi=ilp32",
         "-nostdlib", "-ffreestanding", "-fno-builtin",
         f"-{args.opt}", "-g",
         "-ffunction-sections", "-fdata-sections",
@@ -105,11 +105,17 @@ def main() -> int:
             "-DPERFORMANCE_RUN=1",
             "-DTOTAL_DATA_SIZE=6000",
             "-DITERATIONS=0",
-            '-DFLAGS_STR="-O2 rv32i"',
+            '-DFLAGS_STR="-O2 rv32im"',
             f"-I{COREMARK}",
             f"-I{PORT}",
         ]
         cmd = [gcc] + common + extra + ["-o", str(elf)] + sources + ["-lgcc"]
+    elif args.mode == "mtest":
+        sources = [str(SW / "crt0.S"), str(SW / "libc.c"), str(SW / "uart.c"), str(SW / "mtest.c")]
+        for p in sources:
+            if not Path(p).is_file():
+                raise SystemExit(f"missing source: {p} (run scripts/gen_mtest.py first)")
+        cmd = [gcc] + common + ["-o", str(elf)] + sources + ["-lgcc"]
     else:
         cmd = [gcc] + common + ["-o", str(elf), str(SW / "sim_test.S")]
 

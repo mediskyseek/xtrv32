@@ -5,8 +5,7 @@ out/
 vivado/
 tmp/
 sim/work/
-sw/build_coremark/
-sw/build_sim/
+sw/build_*/
 
 #--------------------------------------------------------------------------
 #  generated ROM image (rebuild with: python scripts/build_sw.py)
