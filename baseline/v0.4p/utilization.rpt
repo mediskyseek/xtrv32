@@ -1,0 +1,34 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2024.2 (win64) Build 5239630 Fri Nov 08 22:35:27 MST 2024
+| Date         : Wed Nov  4 13:56:37 2026
+| Host         : DESKTOP-CCFDOHA running 64-bit major release  (build 9200)
+| Command      : report_utilization -file D:/dev27/z7skytum/myxtrv32/out/utilization_myxtrv32_top_v4.rpt -hierarchical
+| Design       : myxtrv32_top_v4
+| Device       : xc7z020clg400-2
+| Speed File   : -2
+| Design State : Routed
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+Utilization Design Information
+
+Table of Contents
+-----------------
+1. Utilization by Hierarchy
+
+1. Utilization by Hierarchy
+---------------------------
+
++---------------------+-------------------+------------+------------+---------+------+------+--------+--------+------------+
+|       Instance      |       Module      | Total LUTs | Logic LUTs | LUTRAMs | SRLs |  FFs | RAMB36 | RAMB18 | DSP Blocks |
++---------------------+-------------------+------------+------------+---------+------+------+--------+--------+------------+
+| myxtrv32_top_v4     |             (top) |       2241 |       2197 |      44 |    0 | 1192 |     32 |      0 |          4 |
+|   (myxtrv32_top_v4) |             (top) |         11 |         11 |       0 |    0 |  475 |      0 |      0 |          0 |
+|   u_core            | myxtrv32_core_v4p |       2166 |       2122 |      44 |    0 |  691 |      0 |      0 |          4 |
+|   u_ram             |      myxtrv32_ram |         46 |         46 |       0 |    0 |    0 |     16 |      0 |          0 |
+|   u_rom             |      myxtrv32_rom |          2 |          2 |       0 |    0 |    0 |     16 |      0 |          0 |
+|   u_uart            |  myxtrv32_uart_tx |         16 |         16 |       0 |    0 |   26 |      0 |      0 |          0 |
++---------------------+-------------------+------------+------------+---------+------+------+--------+--------+------------+
+* Note: The sum of lower-level cells may be larger than their parent cells total, due to cross-hierarchy LUT combining
+
+

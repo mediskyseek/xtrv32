@@ -149,6 +149,15 @@ module myxtrv32_core_v4p (
     wire [31:0] a = fwd_ex_a ? ex_mem_alu : (fwd_wb_a ? wb_data : rs1_raw);
     wire [31:0] b = fwd_ex_b ? ex_mem_alu : (fwd_wb_b ? wb_data : rs2_raw);
 
+    // Branch / JALR operands skip only the *load* MEM/WB forward (that made
+    // 'RAM output -> wb_data -> compare -> pc' the critical path).  An ALU
+    // result sitting in MEM/WB is still forwarded normally - it is a plain
+    // register (wb_data == mem_wb_alu) and keeps the path short.
+    wire fwd_wb_br_a = fwd_wb_a && !mem_wb_load;
+    wire fwd_wb_br_b = fwd_wb_b && !mem_wb_load;
+    wire [31:0] a_br = fwd_ex_a ? ex_mem_alu : (fwd_wb_br_a ? wb_data : rs1_raw);
+    wire [31:0] b_br = fwd_ex_b ? ex_mem_alu : (fwd_wb_br_b ? wb_data : rs2_raw);
+
     wire signed [31:0] a_s = a;
     wire signed [31:0] b_s = b;
 
@@ -299,12 +308,12 @@ module myxtrv32_core_v4p (
     reg br_cond;
     always @* begin
         case (f3)
-            3'b000: br_cond = (a == b);
-            3'b001: br_cond = (a != b);
-            3'b100: br_cond = (a_s < b_s);
-            3'b101: br_cond = (a_s >= b_s);
-            3'b110: br_cond = (a < b);
-            3'b111: br_cond = (a >= b);
+            3'b000: br_cond = (a_br == b_br);
+            3'b001: br_cond = (a_br != b_br);
+            3'b100: br_cond = ($signed(a_br) < $signed(b_br));
+            3'b101: br_cond = ($signed(a_br) >= $signed(b_br));
+            3'b110: br_cond = (a_br < b_br);
+            3'b111: br_cond = (a_br >= b_br);
             default: br_cond = 1'b0;
         endcase
     end
@@ -314,7 +323,7 @@ module myxtrv32_core_v4p (
     wire redirect = br_taken || jal_go;
 
     wire [31:0] pc_target = is_jal  ? (if_id_pc + imm_j) :
-                            is_jalr ? ((a + imm_i) & ~32'd1) :
+                            is_jalr ? ((a_br + imm_i) & ~32'd1) :
                                       (if_id_pc + imm_b);
 
     wire instr_writes_rd = (opc == 7'b0110111) || (opc == 7'b0010111) ||
@@ -343,7 +352,13 @@ module myxtrv32_core_v4p (
                           ((ex_mem_rd == rs1) || (ex_mem_rd == rs2)) &&
                           (ex_mem_rd != 5'd0);
 
-    wire stall = stall_muldiv || stall_load_use;
+    // Branch/JALR whose operand is still in the MEM/WB load slot: stall one
+    // cycle instead of forwarding through the RAM output.
+    wire br_load_dep = (is_branch || is_jalr) && mem_wb_valid && mem_wb_load &&
+                       (mem_wb_rd != 5'd0) &&
+                       ((mem_wb_rd == rs1) || (mem_wb_rd == rs2));
+
+    wire stall = stall_muldiv || stall_load_use || br_load_dep;
 
     //------------------------------------------------------------------
     // MUL / DIV sequencing
