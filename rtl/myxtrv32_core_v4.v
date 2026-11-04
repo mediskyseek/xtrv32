@@ -89,6 +89,7 @@ module myxtrv32_core_v4 (
     reg        ex_mem_valid;
     reg        ex_mem_load;
     reg [2:0]  ex_mem_f3;
+    reg [2:0]  ex_mem_cls;
 
     // register file read + EX/MEM forwarding
     wire [31:0] rs1_raw = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
@@ -353,6 +354,19 @@ module myxtrv32_core_v4 (
         end
     end
 
+    reg [2:0] cls_w;
+    always @* begin
+        case (opc)
+            7'b0000011: cls_w = 3'd1;                       // LOAD
+            7'b0100011: cls_w = 3'd2;                       // STORE
+            7'b1100011, 7'b1101111, 7'b1100111: cls_w = 3'd3; // BR / JAL / JALR
+            7'b0110011: cls_w = (f7 == 7'b0000001)
+                                ? (f3[2] ? 3'd5 : 3'd4)     // DIV / MUL
+                                : 3'd0;
+            default:    cls_w = 3'd0;
+        endcase
+    end
+
     //------------------------------------------------------------------
     // EX/MEM register update
     //------------------------------------------------------------------
@@ -364,6 +378,7 @@ module myxtrv32_core_v4 (
             ex_mem_alu   <= 32'd0;
             ex_mem_load  <= 1'b0;
             ex_mem_f3    <= 3'd0;
+            ex_mem_cls   <= 3'd0;
         end else if (stall) begin
             ex_mem_valid <= 1'b0;            // bubble while MUL/DIV blocks
         end else if (!halt_r) begin
@@ -373,6 +388,7 @@ module myxtrv32_core_v4 (
             ex_mem_alu   <= alu_out;
             ex_mem_load  <= is_load;
             ex_mem_f3    <= f3;
+            ex_mem_cls   <= cls_w;
         end else begin
             ex_mem_valid <= 1'b0;
         end
@@ -405,7 +421,7 @@ module myxtrv32_core_v4 (
     end
 
     assign retire     = ex_mem_valid;
-    assign retire_cls = 3'd0;
+    assign retire_cls = ex_mem_cls;
 
     //------------------------------------------------------------------
     // PC / halt

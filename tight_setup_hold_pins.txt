@@ -1,0 +1,27 @@
++====================+===================+=========================+
+| Launch Setup Clock | Launch Hold Clock | Pin                     |
++====================+===================+=========================+
+| sys_clk            | sys_clk           | led_r_reg[1]/D          |
+| sys_clk            | sys_clk           | u_uart/st_reg/D         |
+| sys_clk            | sys_clk           | u_uart/busy_reg/D       |
+| sys_clk            | sys_clk           | led_r_reg[0]/D          |
+| sys_clk            | sys_clk           | perf_rdata_q_reg[1]/D   |
+| sys_clk            | sys_clk           | perf_rdata_q_reg[22]/D  |
+| sys_clk            | sys_clk           | perf_rdata_q_reg[30]/D  |
+| sys_clk            | sys_clk           | perf_rdata_q_reg[25]/D  |
+| sys_clk            | sys_clk           | perf_rdata_q_reg[24]/D  |
+| sys_clk            | sys_clk           | perf_rdata_q_reg[21]/D  |
+| sys_clk            | sys_clk           | perf_rdata_q_reg[14]/D  |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[30]/D |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[7]/D  |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[24]/D |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[31]/D |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[22]/D |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[19]/D |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[25]/D |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[17]/D |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[16]/D |
+| sys_clk            | sys_clk           | mtime_rdata_q_reg[23]/D |
+| sys_clk            | sys_clk           | u_core/pc_reg[0]/D      |
+| sys_clk            | sys_clk           | u_core/div_a_reg[31]/D  |
++--------------------+-------------------+-------------------------+
