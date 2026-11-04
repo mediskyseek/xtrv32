@@ -39,16 +39,56 @@ barebones_clock(void)
 
 static CORETIMETYPE start_time_val, stop_time_val;
 
+/*---------------------------------------------------------------- perf counters */
+#define PERF_BASE  0x00020300u
+#define PERF_INST  (*(volatile ee_u32 *)(PERF_BASE + 0x00u))
+#define PERF_ALU   (*(volatile ee_u32 *)(PERF_BASE + 0x04u))
+#define PERF_LOAD  (*(volatile ee_u32 *)(PERF_BASE + 0x08u))
+#define PERF_STORE (*(volatile ee_u32 *)(PERF_BASE + 0x0Cu))
+#define PERF_BR    (*(volatile ee_u32 *)(PERF_BASE + 0x10u))
+#define PERF_MUL   (*(volatile ee_u32 *)(PERF_BASE + 0x14u))
+#define PERF_DIV   (*(volatile ee_u32 *)(PERF_BASE + 0x18u))
+
+static ee_u32 s_inst, s_alu, s_load, s_store, s_br, s_mul, s_div;
+static ee_u32 e_inst, e_alu, e_load, e_store, e_br, e_mul, e_div;
+static ee_u32 run_cycles;
+
+/* percentage helper (64-bit intermediate, avoids the 32-bit overflow that
+   a plain "part * 100 / total" would hit for 1e9+ cycle counts) */
+static unsigned long
+pct_of(ee_u32 part, ee_u32 total)
+{
+    if (!total)
+        return 0;
+    return (unsigned long)(((unsigned long long)part * 100ull)
+                           / (unsigned long long)total);
+}
+
 void
 start_time(void)
 {
     start_time_val = barebones_clock();
+    s_inst  = PERF_INST;
+    s_alu   = PERF_ALU;
+    s_load  = PERF_LOAD;
+    s_store = PERF_STORE;
+    s_br    = PERF_BR;
+    s_mul   = PERF_MUL;
+    s_div   = PERF_DIV;
 }
 
 void
 stop_time(void)
 {
     stop_time_val = barebones_clock();
+    e_inst  = PERF_INST;
+    e_alu   = PERF_ALU;
+    e_load  = PERF_LOAD;
+    e_store = PERF_STORE;
+    e_br    = PERF_BR;
+    e_mul   = PERF_MUL;
+    e_div   = PERF_DIV;
+    run_cycles = stop_time_val - start_time_val;
 }
 
 CORE_TICKS
@@ -75,6 +115,8 @@ portable_init(core_portable *p, int *argc, char *argv[])
 
     GPIO_LED = 1; /* run LED on while the benchmark executes */
 
+    ee_printf("BOOT\r\n");
+
     if (sizeof(ee_ptr_int) != sizeof(ee_u8 *))
     {
         ee_printf("ERROR! ee_ptr_int cannot hold a pointer!\n");
@@ -90,5 +132,44 @@ void
 portable_fini(core_portable *p)
 {
     p->portable_id = 0;
+
+    /* ---- pipeline-analysis report (cycles / instructions of the timed run) */
+    {
+        ee_u32 inst  = e_inst  - s_inst;
+        ee_u32 alu   = e_alu   - s_alu;
+        ee_u32 load  = e_load  - s_load;
+        ee_u32 store = e_store - s_store;
+        ee_u32 br    = e_br    - s_br;
+        ee_u32 mul   = e_mul   - s_mul;
+        ee_u32 div   = e_div   - s_div;
+
+        /* cycles this core needs for each class (multi-cycle, no stalls) */
+        ee_u32 model = alu * 4u + load * 5u + store * 5u + br * 4u
+                       + mul * 5u + div * 37u;
+
+        unsigned long long cpi100 =
+            inst ? (((unsigned long long)run_cycles * 100ull) / (unsigned long long)inst)
+                 : 0ull;
+
+        ee_printf("[perf] cycles=%lu instret=%lu cpi_x100=%lu\n",
+                  (unsigned long)run_cycles,
+                  (unsigned long)inst,
+                  (unsigned long)cpi100);
+        ee_printf("[perf] alu=%lu load=%lu store=%lu br=%lu mul=%lu div=%lu\n",
+                  (unsigned long)alu, (unsigned long)load, (unsigned long)store,
+                  (unsigned long)br, (unsigned long)mul, (unsigned long)div);
+        ee_printf("[perf] model_cycles=%lu actual=%lu gap=%lu\n",
+                  (unsigned long)model,
+                  (unsigned long)run_cycles,
+                  (unsigned long)(run_cycles - model));
+        ee_printf("[perf] share: alu=%lu%% load=%lu%% store=%lu%% br=%lu%% mul=%lu%% div=%lu%%\n",
+                  pct_of(alu * 4u, run_cycles),
+                  pct_of(load * 5u, run_cycles),
+                  pct_of(store * 5u, run_cycles),
+                  pct_of(br * 4u, run_cycles),
+                  pct_of(mul * 5u, run_cycles),
+                  pct_of(div * 37u, run_cycles));
+    }
+
     GPIO_LED = 0;
 }

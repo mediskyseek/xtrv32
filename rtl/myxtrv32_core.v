@@ -37,7 +37,11 @@ module myxtrv32_core (
     // debug / observation
     output wire [31:0] dbg_pc,
     output wire [2:0]  dbg_state,
-    output wire        dbg_halt
+    output wire        dbg_halt,
+
+    // performance counters: one pulse per retired instruction
+    output wire        retire,
+    output wire [2:0]  retire_cls    // 0 ALU, 1 LOAD, 2 STORE, 3 BR/JMP, 4 MUL, 5 DIV
 );
 
     //------------------------------------------------------------------
@@ -321,6 +325,25 @@ module myxtrv32_core (
     assign dbg_pc    = pc;
     assign dbg_state = state;
     assign dbg_halt  = halt_r;
+
+    //------------------------------------------------------------------
+    // Retirement / instruction-class counters (drive top-level perf regs)
+    //------------------------------------------------------------------
+    reg [2:0] cls_w;
+    always @* begin
+        case (opc)
+            7'b0000011: cls_w = 3'd1;                       // LOAD
+            7'b0100011: cls_w = 3'd2;                       // STORE
+            7'b1100011, 7'b1101111, 7'b1100111: cls_w = 3'd3; // BRANCH / JAL / JALR
+            7'b0110011: cls_w = (f7 == 7'b0000001)
+                                ? (f3[2] ? 3'd5 : 3'd4)     // DIV / MUL
+                                : 3'd0;
+            default:    cls_w = 3'd0;                       // ALU / LUI / AUIPC / OP-IMM
+        endcase
+    end
+
+    assign retire     = (state == ST_WB);
+    assign retire_cls = cls_w;
 
     //------------------------------------------------------------------
     // FSM

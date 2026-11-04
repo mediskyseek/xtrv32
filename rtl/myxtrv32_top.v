@@ -55,6 +55,8 @@ module myxtrv32_top #(
     wire [31:0] dbg_pc;
     wire [2:0]  dbg_state;
     wire        dbg_halt;
+    wire        retire;
+    wire [2:0]  retire_cls;
 
     myxtrv32_core u_core (
         .clk        (clk),
@@ -69,7 +71,9 @@ module myxtrv32_top #(
         .dmem_rdata (dmem_rdata),
         .dbg_pc     (dbg_pc),
         .dbg_state  (dbg_state),
-        .dbg_halt   (dbg_halt)
+        .dbg_halt   (dbg_halt),
+        .retire     (retire),
+        .retire_cls (retire_cls)
     );
 
     //------------------------------------------------------------------
@@ -96,12 +100,14 @@ module myxtrv32_top #(
     //   0x0002_00xx          UART TX
     //   0x0002_01xx          GPIO
     //   0x0002_02xx          MTIME
+    //   0x0002_03xx          PERF counters
     //------------------------------------------------------------------
     wire sel_rom   = dmem_req && (A[31:16] == 16'h0000);
     wire sel_ram   = dmem_req && (A[31:16] == 16'h0001);
     wire sel_uart  = dmem_req && (A[31:8] == 24'h000200);
     wire sel_gpio  = dmem_req && (A[31:8] == 24'h000201);
     wire sel_mtime = dmem_req && (A[31:8] == 24'h000202);
+    wire sel_perf  = dmem_req && (A[31:8] == 24'h000203);
 
     //------------------------------------------------------------------
     // Data RAM (64 KiB @ 0x0001_0000)
@@ -179,6 +185,57 @@ module myxtrv32_top #(
     wire [31:0] mtime_read = (A[3:2] == 2'b01) ? mtime_hi_l : mtime[31:0];
 
     //------------------------------------------------------------------
+    // PERF counters @ 0x0002_0300 (read only, 32 bit each)
+    //   +0x00 instret        +0x04 ALU      +0x08 LOAD
+    //   +0x0C STORE          +0x10 BR/JUMP  +0x14 MUL
+    //   +0x18 DIV
+    //------------------------------------------------------------------
+    reg [31:0] perf_inst;
+    reg [31:0] perf_alu;
+    reg [31:0] perf_load;
+    reg [31:0] perf_store;
+    reg [31:0] perf_br;
+    reg [31:0] perf_mul;
+    reg [31:0] perf_div;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            perf_inst  <= 32'd0;
+            perf_alu   <= 32'd0;
+            perf_load  <= 32'd0;
+            perf_store <= 32'd0;
+            perf_br    <= 32'd0;
+            perf_mul   <= 32'd0;
+            perf_div   <= 32'd0;
+        end else if (retire) begin
+            perf_inst <= perf_inst + 32'd1;
+            case (retire_cls)
+                3'd0: perf_alu   <= perf_alu   + 32'd1;
+                3'd1: perf_load  <= perf_load  + 32'd1;
+                3'd2: perf_store <= perf_store + 32'd1;
+                3'd3: perf_br    <= perf_br    + 32'd1;
+                3'd4: perf_mul   <= perf_mul   + 32'd1;
+                3'd5: perf_div   <= perf_div   + 32'd1;
+                default: ;
+            endcase
+        end
+    end
+
+    reg [31:0] perf_read;
+    always @* begin
+        case (A[4:2])
+            3'd0: perf_read = perf_inst;
+            3'd1: perf_read = perf_alu;
+            3'd2: perf_read = perf_load;
+            3'd3: perf_read = perf_store;
+            3'd4: perf_read = perf_br;
+            3'd5: perf_read = perf_mul;
+            3'd6: perf_read = perf_div;
+            default: perf_read = 32'd0;
+        endcase
+    end
+
+    //------------------------------------------------------------------
     // Read data mux.  The RAM has a one cycle read latency, so the MMIO
     // values and the decode selects are registered once to line up with
     // the ST_WB state of the core.
@@ -188,9 +245,11 @@ module myxtrv32_top #(
     reg        sel_uart_q;
     reg        sel_gpio_q;
     reg        sel_mtime_q;
+    reg        sel_perf_q;
     reg [31:0] uart_rdata_q;
     reg [31:0] gpio_rdata_q;
     reg [31:0] mtime_rdata_q;
+    reg [31:0] perf_rdata_q;
 
     wire [31:0] gpio_read = (A[3:2] == 2'b01) ? free_cnt : {30'd0, led_r};
 
@@ -200,9 +259,11 @@ module myxtrv32_top #(
         sel_uart_q   <= sel_uart;
         sel_gpio_q   <= sel_gpio;
         sel_mtime_q  <= sel_mtime;
+        sel_perf_q   <= sel_perf;
         uart_rdata_q <= {31'd0, uart_busy};
         gpio_rdata_q <= gpio_read;
         mtime_rdata_q <= mtime_read;
+        perf_rdata_q  <= perf_read;
     end
 
     // ram_rdata / rom_ddata are registered inside their memories on the
@@ -212,7 +273,8 @@ module myxtrv32_top #(
                         sel_ram_q   ? ram_rdata     :
                         sel_uart_q  ? uart_rdata_q  :
                         sel_gpio_q  ? gpio_rdata_q  :
-                        sel_mtime_q ? mtime_rdata_q : 32'd0;
+                        sel_mtime_q ? mtime_rdata_q :
+                        sel_perf_q  ? perf_rdata_q  : 32'd0;
 
     //------------------------------------------------------------------
     // LEDs
