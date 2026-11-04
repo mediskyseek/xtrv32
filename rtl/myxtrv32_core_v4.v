@@ -49,17 +49,11 @@ module myxtrv32_core_v4 (
     assign dbg_halt  = halt_r;
 
     //------------------------------------------------------------------
-    // IF/ID labels -- updated on the same edge as the ROM output register
+    // IF/ID labels -- updated on the same edge as the ROM output register.
+    // The actual assignment lives further down, after the branch resolution
+    // logic that produces 'redirect'.
     //------------------------------------------------------------------
-    always @(posedge clk) begin
-        if (rst) begin
-            if_id_pc    <= 32'd0;
-            if_id_valid <= 1'b0;
-        end else if (!halt_r) begin
-            if_id_pc    <= pc;
-            if_id_valid <= 1'b1;
-        end
-    end
+    wire if_id_flush;
 
     //------------------------------------------------------------------
     // ID/EX (combinational; input is the ROM output register)
@@ -75,7 +69,9 @@ module myxtrv32_core_v4 (
 
     wire [31:0] imm_i = {{20{instr[31]}}, instr[31:20]};
     wire [31:0] imm_s = {{20{instr[31]}}, instr[31:25], instr[11:7]};
+    wire [31:0] imm_b = {{20{instr[31]}}, instr[7], instr[30:25], instr[11:8], 1'b0};
     wire [31:0] imm_u = {instr[31:12], 12'd0};
+    wire [31:0] imm_j = {{12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1'b0};
 
     reg [31:0] regs [0:31];
 
@@ -134,6 +130,13 @@ module myxtrv32_core_v4 (
             //------------------------------------------------ AUIPC
             7'b0010111: alu_out = if_id_pc + imm_u;
 
+            //------------------------------------------------ JAL / JALR
+            7'b1101111: alu_out = if_id_pc + 32'd4;   // link value
+            7'b1100111: alu_out = if_id_pc + 32'd4;   // link value
+
+            //------------------------------------------------ BRANCH
+            7'b1100011: alu_out = 32'd0;              // no writeback
+
             //------------------------------------------------ LOAD / STORE
             7'b0000011: alu_out = a + imm_i;      // load address
             7'b0100011: alu_out = a + imm_s;      // store address
@@ -177,9 +180,40 @@ module myxtrv32_core_v4 (
     wire is_load  = (opc == 7'b0000011);
     wire is_store = (opc == 7'b0100011);
 
+    //------------------------------------------------------------------
+    // Branch / jump resolution (ID/EX, static not-taken)
+    //   taken -> pc redirects on this edge and IF/ID is flushed on the same
+    //   edge, so the wrong-path instruction never reaches EX/MEM.
+    //------------------------------------------------------------------
+    wire is_branch = (opc == 7'b1100011);
+    wire is_jal    = (opc == 7'b1101111);
+    wire is_jalr   = (opc == 7'b1100111);
+
+    reg br_cond;
+    always @* begin
+        case (f3)
+            3'b000: br_cond = (a == b);
+            3'b001: br_cond = (a != b);
+            3'b100: br_cond = (a_s < b_s);
+            3'b101: br_cond = (a_s >= b_s);
+            3'b110: br_cond = (a < b);
+            3'b111: br_cond = (a >= b);
+            default: br_cond = 1'b0;
+        endcase
+    end
+
+    wire br_taken = is_branch && if_id_valid && br_cond;
+    wire jal_go   = (is_jal || is_jalr) && if_id_valid;
+    wire redirect = br_taken || jal_go;
+
+    wire [31:0] pc_target = is_jal  ? (if_id_pc + imm_j) :
+                            is_jalr ? ((a + imm_i) & ~32'd1) :
+                                      (if_id_pc + imm_b);
+
     wire instr_writes_rd = (opc == 7'b0110111) || (opc == 7'b0010111) ||
                            (opc == 7'b0010011) || (opc == 7'b0110011) ||
-                           (opc == 7'b0000011);
+                           (opc == 7'b0000011) || (opc == 7'b1101111) ||
+                           (opc == 7'b1100111);
 
     //------------------------------------------------------------------
     // EX/MEM register update
@@ -243,9 +277,28 @@ module myxtrv32_core_v4 (
             pc     <= 32'd0;
             halt_r <= 1'b0;
         end else if (!halt_r) begin
-            pc <= pc + 32'd4;
+            if (redirect)
+                pc <= pc_target;
+            else
+                pc <= pc + 32'd4;
+
             if (is_ebreak && if_id_valid)
                 halt_r <= 1'b1;
+        end
+    end
+
+    //------------------------------------------------------------------
+    // IF/ID label update (same edge as the ROM output register)
+    //------------------------------------------------------------------
+    assign if_id_flush = redirect;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            if_id_pc    <= 32'd0;
+            if_id_valid <= 1'b0;
+        end else if (!halt_r) begin
+            if_id_pc    <= pc;
+            if_id_valid <= !if_id_flush;
         end
     end
 
