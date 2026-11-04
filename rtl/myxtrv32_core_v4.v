@@ -57,8 +57,15 @@ module myxtrv32_core_v4 (
 
     //------------------------------------------------------------------
     // ID/EX (combinational; input is the ROM output register)
+    //
+    // While the front end is stalled the pc is frozen, so the ROM output
+    // changes to "pc" (the *next* instruction) rather than the instruction
+    // currently in ID/EX.  instr_hold keeps the stalled instruction alive.
     //------------------------------------------------------------------
-    wire [31:0] instr = imem_rdata;
+    reg  [31:0] instr_hold;
+    reg         stall_d;
+
+    wire [31:0] instr = stall_d ? instr_hold : imem_rdata;
 
     wire [6:0] opc = instr[6:0];
     wire [2:0] f3  = instr[14:12];
@@ -117,6 +124,54 @@ module myxtrv32_core_v4 (
     end
 
     //------------------------------------------------------------------
+    // M extension: DSP multiply (1 extra cycle) and iterative divide
+    //------------------------------------------------------------------
+    // !stall_d: the held instruction is still visible on the cycle after a
+    // stall, so the start pulse must only fire once per instruction.
+    wire mul_start = (opc == 7'b0110011) && (f7 == 7'b0000001) && !f3[2] && !stall_d;
+    wire div_start = (opc == 7'b0110011) && (f7 == 7'b0000001) &&  f3[2] && !stall_d;
+
+    wire [63:0] mul_full_w = a * b;
+
+    reg        mul_busy;
+    reg [63:0] mul_full_r;
+    reg [31:0] mul_a_r;
+    reg [31:0] mul_b_r;
+    reg [2:0]  mul_f3_r;
+
+    wire [31:0] mul_res_w =
+        (mul_f3_r == 3'b000) ? mul_full_r[31:0] :
+        (mul_f3_r == 3'b001) ? (mul_full_r[63:32]
+                                - (mul_a_r[31] ? mul_b_r : 32'd0)
+                                - (mul_b_r[31] ? mul_a_r : 32'd0)) :
+        (mul_f3_r == 3'b010) ? (mul_full_r[63:32]
+                                - (mul_a_r[31] ? mul_b_r : 32'd0)) :
+                               mul_full_r[63:32];
+
+    reg        div_busy;
+    reg [31:0] div_a;
+    reg [31:0] div_b;
+    reg [32:0] div_r;
+    reg [31:0] div_q;
+    reg [5:0]  div_cnt;
+    reg        div_is_rem;
+    reg        div_neg_q;
+    reg        div_neg_r;
+
+    wire [32:0] div_r_shift = {div_r[31:0], div_a[31]};
+    wire [32:0] div_r_sub   = div_r_shift - {1'b0, div_b};
+    wire        div_ge      = (div_r_shift >= {1'b0, div_b});
+    wire [31:0] div_q_final = div_neg_q ? (~div_q + 32'd1) : div_q;
+    wire [31:0] div_r_final = div_neg_r ? (~div_r[31:0] + 32'd1) : div_r[31:0];
+    // divide by zero: quotient = -1, remainder = dividend (RISC-V spec)
+    wire [31:0] div_res_w   = div_is_rem ? div_r_final
+                                         : ((div_b == 32'd0) ? 32'hFFFFFFFF : div_q_final);
+
+    // stall the front end while the multiplier/divider needs more cycles.
+    // div_start must stall too: div_busy is only set on the following edge.
+    wire stall = (mul_start && !mul_busy) || div_start || div_busy;
+
+    //------------------------------------------------------------------
     // ALU
     //------------------------------------------------------------------
     reg [31:0] alu_out;
@@ -158,7 +213,10 @@ module myxtrv32_core_v4 (
 
             //------------------------------------------------ OP
             7'b0110011: begin
-                if (f7 != 7'b0000001) begin       // M extension: later step
+                if (f7 == 7'b0000001) begin
+                    // M extension: result already latched in mul_full_r / div_q
+                    alu_out = f3[2] ? div_res_w : mul_res_w;
+                end else begin
                     case (f3)
                         3'b000: alu_out = f7[5] ? (a - b) : (a + b);
                         3'b010: alu_out = {31'd0, ($signed(a) < $signed(b))};
@@ -216,6 +274,86 @@ module myxtrv32_core_v4 (
                            (opc == 7'b1100111);
 
     //------------------------------------------------------------------
+    // MUL / DIV sequencing
+    //   MUL: sample the DSP on the first cycle, result is ready on the next
+    //   DIV: 32 restoring steps while the front end is stalled
+    //------------------------------------------------------------------
+    always @(posedge clk) begin
+        if (rst) begin
+            mul_busy   <= 1'b0;
+            mul_full_r <= 64'd0;
+            mul_a_r    <= 32'd0;
+            mul_b_r    <= 32'd0;
+            mul_f3_r   <= 3'd0;
+            div_busy   <= 1'b0;
+            div_a      <= 32'd0;
+            div_b      <= 32'd0;
+            div_r      <= 33'd0;
+            div_q      <= 32'd0;
+            div_cnt    <= 6'd0;
+            div_is_rem <= 1'b0;
+            div_neg_q  <= 1'b0;
+            div_neg_r  <= 1'b0;
+        end else if (!halt_r) begin
+            //-------------------------------------------------- multiply
+            if (mul_start && !mul_busy) begin
+                $display("[COREMUL] a=%h b=%h full=%h f3=%b fwda=%b fwdb=%b",
+                         a, b, mul_full_w, f3, fwd_a, fwd_b);
+                mul_full_r <= mul_full_w;
+                mul_a_r    <= a;
+                mul_b_r    <= b;
+                mul_f3_r   <= f3;
+                mul_busy   <= 1'b1;
+            end else if (mul_busy) begin
+                mul_busy   <= 1'b0;      // result consumed this cycle
+            end
+
+            //-------------------------------------------------- divide
+            if (div_start && !div_busy) begin
+                div_is_rem <= f3[1];
+                div_cnt    <= 6'd32;
+                div_q      <= 32'd0;
+                div_r      <= 33'd0;
+                if (!f3[0]) begin
+                    div_a     <= a[31] ? (~a + 32'd1) : a;
+                    div_b     <= b[31] ? (~b + 32'd1) : b;
+                    div_neg_q <= a[31] ^ b[31];
+                    div_neg_r <= a[31];
+                end else begin
+                    div_a     <= a;
+                    div_b     <= b;
+                    div_neg_q <= 1'b0;
+                    div_neg_r <= 1'b0;
+                end
+                div_busy <= 1'b1;        // div-by-zero handled by the quotient
+            end else if (div_busy) begin
+                if (div_cnt != 6'd0) begin
+                    div_r   <= div_ge ? div_r_sub : div_r_shift;
+                    div_q   <= {div_q[30:0], div_ge};
+                    div_a   <= {div_a[30:0], 1'b0};
+                    div_cnt <= div_cnt - 6'd1;
+                end else begin
+                    div_busy <= 1'b0;
+                end
+            end
+        end
+    end
+
+    //------------------------------------------------------------------
+    // Instruction hold across stalls (needs 'stall', declared above)
+    //------------------------------------------------------------------
+    always @(posedge clk) begin
+        if (rst) begin
+            instr_hold <= 32'd0;
+            stall_d    <= 1'b0;
+        end else begin
+            if (stall && !stall_d)       // only latch on the first stall cycle
+                instr_hold <= imem_rdata;
+            stall_d <= stall;
+        end
+    end
+
+    //------------------------------------------------------------------
     // EX/MEM register update
     //------------------------------------------------------------------
     always @(posedge clk) begin
@@ -226,6 +364,8 @@ module myxtrv32_core_v4 (
             ex_mem_alu   <= 32'd0;
             ex_mem_load  <= 1'b0;
             ex_mem_f3    <= 3'd0;
+        end else if (stall) begin
+            ex_mem_valid <= 1'b0;            // bubble while MUL/DIV blocks
         end else if (!halt_r) begin
             ex_mem_valid <= if_id_valid;
             ex_mem_we    <= instr_writes_rd;
@@ -276,7 +416,7 @@ module myxtrv32_core_v4 (
         if (rst) begin
             pc     <= 32'd0;
             halt_r <= 1'b0;
-        end else if (!halt_r) begin
+        end else if (!halt_r && !stall) begin
             if (redirect)
                 pc <= pc_target;
             else
@@ -296,7 +436,7 @@ module myxtrv32_core_v4 (
         if (rst) begin
             if_id_pc    <= 32'd0;
             if_id_valid <= 1'b0;
-        end else if (!halt_r) begin
+        end else if (!halt_r && !stall) begin
             if_id_pc    <= pc;
             if_id_valid <= !if_id_flush;
         end
