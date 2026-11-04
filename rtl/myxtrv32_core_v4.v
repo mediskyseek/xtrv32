@@ -74,6 +74,7 @@ module myxtrv32_core_v4 (
     wire [4:0] rd  = instr[11:7];
 
     wire [31:0] imm_i = {{20{instr[31]}}, instr[31:20]};
+    wire [31:0] imm_s = {{20{instr[31]}}, instr[31:25], instr[11:7]};
     wire [31:0] imm_u = {instr[31:12], 12'd0};
 
     reg [31:0] regs [0:31];
@@ -83,6 +84,8 @@ module myxtrv32_core_v4 (
     reg [4:0]  ex_mem_rd;
     reg        ex_mem_we;
     reg        ex_mem_valid;
+    reg        ex_mem_load;
+    reg [2:0]  ex_mem_f3;
 
     // register file read + EX/MEM forwarding
     wire [31:0] rs1_raw = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
@@ -91,8 +94,13 @@ module myxtrv32_core_v4 (
     wire fwd_a = ex_mem_valid && ex_mem_we && (ex_mem_rd == rs1) && (rs1 != 5'd0);
     wire fwd_b = ex_mem_valid && ex_mem_we && (ex_mem_rd == rs2) && (rs2 != 5'd0);
 
-    wire [31:0] a = fwd_a ? ex_mem_alu : rs1_raw;
-    wire [31:0] b = fwd_b ? ex_mem_alu : rs2_raw;
+    // forwarding source is the final writeback value: for a load that is
+    // mem_rdata after byte/half extraction and sign extension, so the
+    // load->use case needs no stall (the RAM output is valid this cycle).
+    wire [31:0] wb_data;
+
+    wire [31:0] a = fwd_a ? wb_data : rs1_raw;
+    wire [31:0] b = fwd_b ? wb_data : rs2_raw;
 
     // explicit signed view: '$signed(a) >>> n' inside a ?: expression is not
     // reliably treated as an arithmetic shift by every simulator
@@ -125,6 +133,10 @@ module myxtrv32_core_v4 (
 
             //------------------------------------------------ AUIPC
             7'b0010111: alu_out = if_id_pc + imm_u;
+
+            //------------------------------------------------ LOAD / STORE
+            7'b0000011: alu_out = a + imm_i;      // load address
+            7'b0100011: alu_out = a + imm_s;      // store address
 
             //------------------------------------------------ OP-IMM
             7'b0010011: begin
@@ -162,8 +174,12 @@ module myxtrv32_core_v4 (
         endcase
     end
 
+    wire is_load  = (opc == 7'b0000011);
+    wire is_store = (opc == 7'b0100011);
+
     wire instr_writes_rd = (opc == 7'b0110111) || (opc == 7'b0010111) ||
-                           (opc == 7'b0010011) || (opc == 7'b0110011);
+                           (opc == 7'b0010011) || (opc == 7'b0110011) ||
+                           (opc == 7'b0000011);
 
     //------------------------------------------------------------------
     // EX/MEM register update
@@ -174,22 +190,44 @@ module myxtrv32_core_v4 (
             ex_mem_we    <= 1'b0;
             ex_mem_rd    <= 5'd0;
             ex_mem_alu   <= 32'd0;
+            ex_mem_load  <= 1'b0;
+            ex_mem_f3    <= 3'd0;
         end else if (!halt_r) begin
             ex_mem_valid <= if_id_valid;
             ex_mem_we    <= instr_writes_rd;
             ex_mem_rd    <= rd;
             ex_mem_alu   <= alu_out;
+            ex_mem_load  <= is_load;
+            ex_mem_f3    <= f3;
         end else begin
             ex_mem_valid <= 1'b0;
         end
     end
 
     //------------------------------------------------------------------
+    // Load data extraction (uses the EX/MEM copy of the address and funct3)
+    //------------------------------------------------------------------
+    wire [31:0] ld_shift = dmem_rdata >> {ex_mem_alu[1:0], 3'b000};
+
+    reg [31:0] ld_ext;
+    always @* begin
+        case (ex_mem_f3)
+            3'b000: ld_ext = {{24{ld_shift[7]}},  ld_shift[7:0]};    // LB
+            3'b001: ld_ext = {{16{ld_shift[15]}}, ld_shift[15:0]};   // LH
+            3'b100: ld_ext = {24'd0, ld_shift[7:0]};                 // LBU
+            3'b101: ld_ext = {16'd0, ld_shift[15:0]};                // LHU
+            default: ld_ext = ld_shift;                              // LW
+        endcase
+    end
+
+    assign wb_data = ex_mem_load ? ld_ext : ex_mem_alu;
+
+    //------------------------------------------------------------------
     // MEM/WB: write back + retirement
     //------------------------------------------------------------------
     always @(posedge clk) begin
         if (ex_mem_valid && ex_mem_we && (ex_mem_rd != 5'd0))
-            regs[ex_mem_rd] <= ex_mem_alu;
+            regs[ex_mem_rd] <= wb_data;
     end
 
     assign retire     = ex_mem_valid;
@@ -212,14 +250,33 @@ module myxtrv32_core_v4 (
     end
 
     //------------------------------------------------------------------
-    // Data port is unused in the ALU skeleton
+    // Data port -- driven combinationally from ID/EX, sampled on the edge
     //------------------------------------------------------------------
-    assign dmem_req   = 1'b0;
-    assign dmem_we    = 1'b0;
-    assign dmem_addr  = 32'd0;
-    assign dmem_wdata = 32'd0;
-    assign dmem_wstrb = 4'd0;
-    wire _unused = &{1'b0, dmem_rdata};
+    reg [31:0] st_data;
+    reg [3:0]  st_strb;
+
+    always @* begin
+        case (f3)
+            3'b000: begin                                  // SB
+                st_data = {4{b[7:0]}};
+                st_strb = 4'b0001 << alu_out[1:0];
+            end
+            3'b001: begin                                  // SH
+                st_data = {2{b[15:0]}};
+                st_strb = alu_out[1] ? 4'b1100 : 4'b0011;
+            end
+            default: begin                                 // SW
+                st_data = b;
+                st_strb = 4'b1111;
+            end
+        endcase
+    end
+
+    assign dmem_req   = (is_load || is_store) && if_id_valid;
+    assign dmem_we    = is_store && if_id_valid;
+    assign dmem_addr  = alu_out;
+    assign dmem_wdata = st_data;
+    assign dmem_wstrb = st_strb;
 
 endmodule
 

@@ -67,7 +67,7 @@ def coremark_sources() -> list[Path]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["coremark", "sim", "mtest", "alu"], default="coremark")
+    ap.add_argument("--mode", choices=["coremark", "sim", "mtest", "alu", "mem"], default="coremark")
     ap.add_argument("--build-dir", default=None)
     ap.add_argument("--rom-out", default="rtl/myxtrv32_rom.v")
     ap.add_argument("-O", dest="opt", default="O2", help="optimisation level (O2/O3/Os)")
@@ -112,6 +112,8 @@ def main() -> int:
         cmd = [gcc] + common + extra + ["-o", str(elf)] + sources + ["-lgcc"]
     elif args.mode == "alu":
         cmd = [gcc] + common + ["-o", str(elf), str(SW / "alu_test.S")]
+    elif args.mode == "mem":
+        cmd = [gcc] + common + ["-o", str(elf), str(SW / "mem_test.S")]
     elif args.mode == "mtest":
         sources = [str(SW / "crt0.S"), str(SW / "libc.c"), str(SW / "uart.c"), str(SW / "mtest.c")]
         for p in sources:
