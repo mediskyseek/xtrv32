@@ -9,6 +9,11 @@
 
 module tb_myxtrv32;
 
+    // Number of '\n' terminated lines the firmware is expected to print
+    // before the bench declares success.  Override per firmware:
+    //   iverilog -P tb_myxtrv32.LINES=1 ...
+    parameter integer LINES = 2;
+
     localparam integer CLK_HZ    = 100_000_000;
     localparam integer BAUD      = 1_000_000;
     localparam integer BIT_TICKS = (CLK_HZ + BAUD / 2) / BAUD;
@@ -65,8 +70,8 @@ module tb_myxtrv32;
                 $write("%c", rx_byte);
                 if (rx_byte == 8'h0A) begin
                     n_lines = n_lines + 1;
-                    if (n_lines >= 2) begin
-                        $display("\n[TB] PASS: firmware printed the DONE line after %0d bytes", n_bytes);
+                    if (n_lines >= LINES) begin
+                        $display("\n[TB] PASS: firmware printed %0d line(s) after %0d bytes", n_lines, n_bytes);
                         $display("[TB] LED toggles = %0d", led_toggles);
                         $finish;
                     end
@@ -83,10 +88,10 @@ module tb_myxtrv32;
     // Watchdog
     //------------------------------------------------------------------
     initial begin
-        $display("[TB] starting MyXTRV32 simulation");
+        $display("[TB] starting MyXTRV32 simulation (expect %0d line(s))", LINES);
         #20_000_000;                       // 20 ms
-        $display("\n[TB] FAIL: timeout, %0d bytes received", n_bytes);
-        $finish;
+        $display("\n[TB] FAIL: timeout, %0d bytes / %0d line(s) received", n_bytes, n_lines);
+        $fatal(1);
     end
 
 endmodule

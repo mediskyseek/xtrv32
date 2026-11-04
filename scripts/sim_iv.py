@@ -60,8 +60,11 @@ def main() -> int:
             raise SystemExit(f"missing source: {s}")
 
     vvp = WORK / "sim.vvp"
+    # expected number of newline-terminated UART lines per firmware image
+    expect_lines = {"sim": 2, "mtest": 1, "coremark": 2}[args.mode]
     r = run([str(IV / "iverilog.exe"), "-g2012", "-o", str(vvp),
-             "-s", "tb_myxtrv32"] + [str(s) for s in srcs], ROOT)
+             "-s", "tb_myxtrv32",
+             f"-Ptb_myxtrv32.LINES={expect_lines}"] + [str(s) for s in srcs], ROOT)
     if r.returncode != 0:
         print(r.stdout)
         print(r.stderr, file=sys.stderr)
@@ -72,8 +75,13 @@ def main() -> int:
     if r.stderr:
         print(r.stderr, file=sys.stderr)
 
-    ok = "PASS" in r.stdout or "PASS" in r.stderr
-    return 0 if ok else 1
+    # success = vvp exit status 0 AND the bench printed its PASS marker.
+    # A timeout now calls $fatal(1), so a hung bench can never be mistaken
+    # for a pass just because the firmware happened to print "PASS".
+    combined = (r.stdout or "") + (r.stderr or "")
+    passed = (r.returncode == 0) and ("[TB] PASS" in combined)
+    print(f"[sim_iv] vvp exit={r.returncode} -> {'PASS' if passed else 'FAIL'}")
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
