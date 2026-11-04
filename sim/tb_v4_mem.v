@@ -52,7 +52,7 @@ module tb_v4_mem;
 
     wire [31:0] dmem_rdata = sel_ram_q ? ram_rdata : 32'd0;
 
-    myxtrv32_core_v4 dut (
+    myxtrv32_core_v4p dut (
         .clk        (clk),
         .rst        (rst),
         .imem_addr  (imem_addr),

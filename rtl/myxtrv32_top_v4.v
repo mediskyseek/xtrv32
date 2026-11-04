@@ -57,7 +57,7 @@ module myxtrv32_top_v4 #(
     wire        retire;
     wire [2:0]  retire_cls;
 
-    myxtrv32_core_v4 u_core (
+    myxtrv32_core_v4p u_core (
         .clk        (clk),
         .rst        (rst),
         .imem_addr  (imem_addr),

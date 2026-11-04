@@ -30,7 +30,7 @@ read_verilog "$rtl/myxtrv32_uart_tx.v"
 read_verilog "$rtl/myxtrv32_ram.v"
 read_verilog "$rtl/myxtrv32_rom.v"
 if {$top eq "myxtrv32_top_v4"} {
-    read_verilog "$rtl/myxtrv32_core_v4.v"
+    read_verilog "$rtl/myxtrv32_core_v4p.v"
     read_verilog "$rtl/myxtrv32_top_v4.v"
 } else {
     read_verilog "$rtl/myxtrv32_core.v"
@@ -44,9 +44,10 @@ write_checkpoint -force "$out/post_synth_$top.dcp"
 report_utilization -file "$out/utilization_${top}_synth.rpt"
 
 #---------------------------------------------------------------- implementation
-opt_design
-place_design
-route_design
+opt_design -directive Explore
+place_design -directive Explore
+phys_opt_design -directive AggressiveExplore
+route_design -directive Explore
 
 write_checkpoint -force "$out/post_route_$top.dcp"
 

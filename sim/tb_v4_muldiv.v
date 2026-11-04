@@ -31,7 +31,7 @@ module tb_v4_muldiv;
         .ddata ()
     );
 
-    myxtrv32_core_v4 dut (
+    myxtrv32_core_v4p dut (
         .clk        (clk),
         .rst        (rst),
         .imem_addr  (imem_addr),
