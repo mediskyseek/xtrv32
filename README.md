@@ -1,4 +1,26 @@
-# MyXTRV32 v0.3
+# MyXTRV32
+
+> **当前版本：v0.5** —— 四级流水线 RV32IM，100 MHz，xc7z020clg400-2，
+> CoreMark 1.0 = **37.20**（CPI 1.256），CRC 全对，release WNS **+0.036 ns**。
+>
+> | 版本 | 微架构 | CPI | CoreMark | 说明 |
+> |---|---|---|---|---|
+> | v0.3 | 多周期 FSM | 4.27 | 10.93 | M 扩展，无流水线 |
+> | v0.4 | 四级流水线 | 1.315 | 35.53 | IF / ID·EX / MEM / WB |
+> | **v0.5** | 四级流水线 | **1.256** | **37.20** | 冒险修复 + MUL 单拍 |
+>
+> 当前 RTL 是 `rtl/myxtrv32_core_v4p.v`，顶层 `rtl/myxtrv32_top_v4.v`，
+> 构建命令 `vivado -mode batch -source scripts/build.tcl -tclargs myxtrv32_top_v4`。
+> 定向回归：`python scripts/sim_v4.py --mode all`（6 个 bench）。
+> 细节见 [release/v0.5/RELEASE.txt](release/v0.5/RELEASE.txt) 与
+> [doc/v0.5_hazards_and_mul.md](doc/v0.5_hazards_and_mul.md)。
+>
+> **注意**：`rtl/myxtrv32_core_v4.v` 是早期三级流水线**骨架**（只有 ALU 子集，
+> 无 LOAD/STORE/BRANCH/M），没有被任何脚本引用，不要拿它当 v0.4 的实现。
+>
+> 下面第 1 节起描述的是 **v0.3 多周期实现**，保留作为历史记录。
+
+## v0.3 架构（历史）
 
 一个面向 xc7z020（Zynq-7020）的极简 RISC-V 软核：**多周期 FSM、单发射、无流水线**，配套 BRAM ROM / BRAM RAM、UART TX 与 GPIO。v0.2 起支持 C 程序与 CoreMark，v0.3 加入 **M 扩展**，CoreMark 分数提升约 3.5 倍。
 

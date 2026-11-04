@@ -16,14 +16,23 @@
 //              is_store, rd, funct3, class, valid
 //    MEM/WB  : alu_r, mem_addr, rd, we, is_load, funct3, valid
 //
-//  Hazards
+//  Hazards  (v0.5)
 //    ALU -> ALU      : EX/MEM  forward (1 mux level, unconditional)
 //    LOAD -> use     : 1-cycle stall, then MEM/WB -> EX forward
 //                      (RAM data is valid during WB, so a single stall is
-//                       exactly what the synchronous read latency needs)
-//    MUL             : 1-cycle stall in ID/EX, result captured in EX/MEM
+//                       exactly what the synchronous read latency needs);
+//                      only registers the instruction really reads are
+//                       compared (uses_rs1 / uses_rs2)
+//    MUL             : 1-cycle stall in ID/EX, low half of the DSP product
+//                      captured in EX/MEM on the second cycle; MULH* wait one
+//                      extra cycle for the registered 64-bit product
 //    DIV             : blocks ID/EX for 32 iterations, EX/MEM takes bubbles
 //    BRANCH/JAL/JALR : resolved in ID/EX, flush IF/ID on the same edge
+//
+//  A MUL/DIV must not capture operands while a load-use bubble is pending
+//  (the EX/MEM forward would hand over the load *address*), and a flushed or
+//  wrong-path MUL/DIV must not launch at all - see mul_cap / div_cap and
+//  stall_md_q below.
 //============================================================================
 `timescale 1ns / 1ps
 `default_nettype none
@@ -159,13 +168,14 @@ module myxtrv32_core_v4p (
     wire [31:0] b = fwd_ex_b ? ex_mem_alu : (fwd_wb_b ? wb_data : rs2_raw);
 
     // Branch / JALR operands skip only the *load* MEM/WB forward (that made
-    // 'RAM output -> wb_data -> compare -> pc' the critical path).  An ALU
-    // result sitting in MEM/WB is still forwarded normally - it is a plain
-    // register (wb_data == mem_wb_alu) and keeps the path short.
+    // 'RAM output -> wb_data -> compare -> pc' the critical path).  Because
+    // fwd_wb_br_* already excludes a load, the ALU value in MEM/WB is
+    // identical to wb_data and can be selected directly - that keeps the RAM
+    // output off the branch-compare cone entirely.
     wire fwd_wb_br_a = fwd_wb_a && !mem_wb_load;
     wire fwd_wb_br_b = fwd_wb_b && !mem_wb_load;
-    wire [31:0] a_br = fwd_ex_a ? ex_mem_alu : (fwd_wb_br_a ? wb_data : rs1_raw);
-    wire [31:0] b_br = fwd_ex_b ? ex_mem_alu : (fwd_wb_br_b ? wb_data : rs2_raw);
+    wire [31:0] a_br = fwd_ex_a ? ex_mem_alu : (fwd_wb_br_a ? mem_wb_alu : rs1_raw);
+    wire [31:0] b_br = fwd_ex_b ? ex_mem_alu : (fwd_wb_br_b ? mem_wb_alu : rs2_raw);
 
     wire signed [31:0] a_s = a;
     wire signed [31:0] b_s = b;
@@ -182,10 +192,23 @@ module myxtrv32_core_v4p (
     end
 
     //------------------------------------------------------------------
-    // M extension state
+    // Source-register usage
+    // [24:20] is only a register number when the encoding says so; for
+    // OP-IMM / LOAD / JALR that field is immediate bits.  Comparing it
+    // blindly invents both false hazards (a bubble for a non-existent
+    // dependency) and, through mul_start, wrong MUL/DIV operands.
     //------------------------------------------------------------------
-    wire mul_start = (opc == 7'b0110011) && (f7 == 7'b0000001) && !f3[2] && !stall_d;
-    wire div_start = (opc == 7'b0110011) && (f7 == 7'b0000001) &&  f3[2] && !stall_d;
+    wire uses_rs1 = (opc == 7'b0110011) || (opc == 7'b0010011) ||
+                    (opc == 7'b0000011) || (opc == 7'b0100011) ||
+                    (opc == 7'b1100011) || (opc == 7'b1100111);
+    wire uses_rs2 = (opc == 7'b0110011) || (opc == 7'b0100011) ||
+                    (opc == 7'b1100011);
+
+    //------------------------------------------------------------------
+    // M extension state
+    // (mul_start / div_start are defined after the hazard network below,
+    //  because they must not fire while a load-use bubble is pending)
+    //------------------------------------------------------------------
 
     // Register the multiplicand inputs so the DSP can use its internal
     // AREG/BREG registers; the path "ROM -> forward mux -> DSP" was the
@@ -261,7 +284,9 @@ module myxtrv32_core_v4p (
 
             7'b0110011: begin
                 if (f7 == 7'b0000001)
-                    alu_out = f3[2] ? div_res_w : mul_res_w;
+                    alu_out = f3[2] ? div_res_w :
+                              (mul_busy && (f3 == 3'b000)) ? mul_full_w[31:0] :
+                              mul_res_w;
                 else begin
                     case (f3)
                         3'b000: alu_out = f7[5] ? (a - b) : (a + b);
@@ -360,17 +385,65 @@ module myxtrv32_core_v4p (
     // Stall: MUL/DIV block ID/EX; a load->use pair costs exactly one cycle
     // because the RAM output is valid during MEM/WB.
     //------------------------------------------------------------------
-    wire stall_muldiv = (mul_start && !mul_busy) || mul_busy || div_start || div_busy;
+    // Only registers the decoded instruction really reads can collide.
+    // hit1/hit2 are shared by the qualified hazard and by the raw compare
+    // used for MUL/DIV operand capture, so rs1/rs2 each drive one comparator.
+    wire hit1 = (ex_mem_rd == rs1);
+    wire hit2 = (ex_mem_rd == rs2);
 
-    wire stall_load_use = ex_mem_valid && ex_mem_load && if_id_valid &&
-                          ((ex_mem_rd == rs1) || (ex_mem_rd == rs2)) &&
-                          (ex_mem_rd != 5'd0);
+    wire lu_any = ex_mem_valid && ex_mem_load && if_id_valid &&
+                  (ex_mem_rd != 5'd0) && (hit1 || hit2);
+
+    wire stall_load_use = lu_any && ((hit1 && uses_rs1) || (hit2 && uses_rs2));
+
+    // A MUL/DIV always reads both source fields, so the raw compare is already
+    // exact for them.  It must *not* reach 'stall' directly: rom -> rs compare
+    // -> launch -> PC enable turned into a 15-level path (-0.315 ns).  It only
+    // gates the operand capture and the stall_md_q bookkeeping below, which
+    // end at a flop.
 
     // Branch/JALR whose operand is still in the MEM/WB load slot: stall one
     // cycle instead of forwarding through the RAM output.
+    wire br_rs1 = uses_rs1 && (mem_wb_rd == rs1);
+    wire br_rs2 = uses_rs2 && (mem_wb_rd == rs2);
+
     wire br_load_dep = (is_branch || is_jalr) && mem_wb_valid && mem_wb_load &&
-                       (mem_wb_rd != 5'd0) &&
-                       ((mem_wb_rd == rs1) || (mem_wb_rd == rs2));
+                       (mem_wb_rd != 5'd0) && (br_rs1 || br_rs2);
+
+    wire stall_muldiv;
+    reg  stall_md_q;
+
+    // Launch conditions.  A wrong-path MUL/DIV (if_id_valid = 0) must not
+    // start.  stall_md_q (not stall_d) suppresses the re-launch on the cycle
+    // after the multiply/divide itself blocked: a load-use bubble may have
+    // occupied the previous cycle as well, and that one must still let the op
+    // start.
+    wire mul_start = (opc == 7'b0110011) && (f7 == 7'b0000001) && !f3[2] &&
+                     if_id_valid && !stall_md_q;
+    wire div_start = (opc == 7'b0110011) && (f7 == 7'b0000001) &&  f3[2] &&
+                     if_id_valid && !stall_md_q;
+
+    // Operand capture is additionally blocked while the sources still come
+    // from a load in EX/MEM (forwarding would hand over the address).
+    wire mul_cap = mul_start && !mul_busy && !lu_any;
+    wire div_cap = div_start && !div_busy && !lu_any;
+
+    // Plain MUL only needs the low half of the product, so the DSP output can
+    // go straight into EX/MEM on the second cycle: one block cycle instead of
+    // two.  MULH/MULHSU/MULHU still wait for the registered 64-bit product.
+    wire mul_fast = (f3 == 3'b000);
+
+    assign stall_muldiv = (mul_start && !mul_busy) || (mul_busy && !mul_fast) ||
+                          div_start || div_busy;
+
+    // A cycle in which the capture was deferred by a pending load must not be
+    // remembered as "MUL/DIV blocked", otherwise the retry would be refused.
+    always @(posedge clk) begin
+        if (rst)
+            stall_md_q <= 1'b0;
+        else
+            stall_md_q <= stall_muldiv && !(lu_any && !mul_busy && !div_busy);
+    end
 
     wire stall = stall_muldiv || stall_load_use || br_load_dep;
 
@@ -438,7 +511,7 @@ module myxtrv32_core_v4p (
             div_neg_r  <= 1'b0;
         end else if (!halt_r) begin
             //-------------------------------------------------- multiply
-            if (mul_start && !mul_busy) begin
+            if (mul_cap) begin
                 mul_op_a   <= a;
                 mul_op_b   <= b;
                 mul_a_r    <= a;
@@ -451,7 +524,7 @@ module myxtrv32_core_v4p (
             end
 
             //-------------------------------------------------- divide
-            if (div_start && !div_busy) begin
+            if (div_cap) begin
                 div_is_rem <= f3[1];
                 div_cnt    <= 6'd32;
                 div_q      <= 32'd0;

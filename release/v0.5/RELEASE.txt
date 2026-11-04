@@ -1,0 +1,45 @@
+MyXTRV32 v0.5 release
+=====================
+Architecture : 4-stage pipeline (IF | ID/EX | MEM | WB), RV32IM
+Clock        : 100 MHz (xc7z020clg400-2)
+WNS          : +0.036 ns (release build, PERF_EXT disabled)
+CPI          : 1.256
+CoreMark     : 37.20 (600 iterations / 16.1270 s), 0.372 CoreMark/MHz
+CRC          : crclist 0xd4b0, crcmatrix 0xbe52, crcstate 0x5e47  (all correct)
+Resources    : LUT 2339 / FF 661 / DSP 4 / BRAM 32 (release build)
+Build        : vivado -mode batch -source scripts/build.tcl -tclargs myxtrv32_top_v4
+Perf counters: rebuild with '-tclargs myxtrv32_top_v4 perf' (PERF_EXT), WNS -0.217,
+               see perf_ext_stats.log
+
+Changes since v0.4
+------------------
+1. Hazard fix (correctness): a MUL/DIV immediately after a LOAD captured the
+   *address* the EX/MEM forward mux was driving, because the launch condition
+   ignored the pending load-use bubble.  `mul x4, x1, x5` after `lw x1, 0(x2)`
+   produced addr*rs2 (0x00030000 instead of 0x0000369c) and `div` returned the
+   divide-by-zero result.  Fixed by gating the operand capture on the raw
+   load-use compare, and by remembering "the MUL/DIV itself blocked" in
+   stall_md_q instead of reusing stall_d (reusing stall_d also suppressed the
+   retry on the cycle after a load-use bubble, so the op silently reused stale
+   operands).
+
+2. Hazard fix (perf, small): stall_load_use / br_load_dep compared the raw
+   [24:20] field, which is immediate data for OP-IMM / LOAD / JALR.  Added
+   uses_rs1 / uses_rs2.  Measured effect on CoreMark: 45,841,122 -> 45,832,122
+   load-use stall cycles, i.e. 9,000 cycles out of 1.69G (0.0005%): in real
+   code the false-positive rate is negligible.
+
+3. MUL fast path: a plain MUL only needs the low half of the product, so the
+   DSP output feeds EX/MEM directly on the second cycle.  MULH/MULHSU/MULHU
+   keep the registered 64-bit product and two block cycles.
+   stall_muldiv: 152,280,000 -> 76,140,000 cycles (-76.14M, -4.5% total).
+
+4. Timing: branch / JALR operand forwarding now selects mem_wb_alu (the
+   load case is already excluded by fwd_wb_br_*), which removes the RAM output
+   from the branch-compare cone.  This is what recovered the WNS that the
+   extra hazard logic had consumed (-0.315 -> +0.036).
+
+5. Placement directive: place_design -directive ExtraTimingOpt.
+
+Regression: scripts/sim_v4.py --mode all -> 6/6 directed benches
+(alu, mem, branch, muldiv, hazard, mulchain).  hazard/mulchain are new.

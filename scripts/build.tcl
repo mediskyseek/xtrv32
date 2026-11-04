@@ -57,7 +57,7 @@ report_utilization -file "$out/utilization_${top}_synth.rpt"
 
 #---------------------------------------------------------------- implementation
 opt_design -directive Explore
-place_design -directive Explore
+place_design -directive ExtraTimingOpt
 phys_opt_design -directive AggressiveExplore
 route_design -directive AggressiveExplore
 

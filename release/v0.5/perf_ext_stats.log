@@ -1,0 +1,21 @@
+BOOT
+6k performance run parameters for coremark.
+CoreMark Size    : 2000
+Total ticks      : 1612696209
+Total time (secs): 16
+Iterations/Sec   : 37
+Iterations       : 600
+Compiler version : riscv-none-elf-gcc 15.2.0
+Compiler flags   : -O2 rv32im
+Memory location  : STATIC
+seedcrc          : 0x8a02
+[0]crclist       : 0xd4b0
+[0]crcmatrix     : 0xbe52
+[0]crcstate      : 0x5e47
+[0]crcfinal      : 0x764e
+Correct operation validated. See README.md for run and reporting rules.
+[perf] cycles=1612696209 instret=1284402099 cpi_x100=125
+[perf] inst alu=672273828 load=229565989 store=49195949 br=257226333 mul=76140000 div=0
+[perf] br taken=125647471 not=99875745 flush=157350588
+[perf] stall ld=45832122 br=48971400 md=76140000 total=170943522 (10% of cycles)
+[perf] overhead cycles=328294110 (instret+stall+flush=328294110)
