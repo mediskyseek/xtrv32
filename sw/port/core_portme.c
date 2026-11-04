@@ -83,12 +83,14 @@ start_time(void)
     s_br    = PERF_BR;
     s_mul   = PERF_MUL;
     s_div   = PERF_DIV;
+#ifdef PERF_EXT
     s_btaken = PERF_BTAKEN;
     s_bnot   = PERF_BNOT;
     s_stld   = PERF_ST_LD;
     s_stbr   = PERF_ST_BR;
     s_stmd   = PERF_ST_MD;
     s_flush  = PERF_FLUSH;
+#endif
 }
 
 void
@@ -102,12 +104,14 @@ stop_time(void)
     e_br    = PERF_BR;
     e_mul   = PERF_MUL;
     e_div   = PERF_DIV;
+#ifdef PERF_EXT
     e_btaken = PERF_BTAKEN;
     e_bnot   = PERF_BNOT;
     e_stld   = PERF_ST_LD;
     e_stbr   = PERF_ST_BR;
     e_stmd   = PERF_ST_MD;
     e_flush  = PERF_FLUSH;
+#endif
     run_cycles = stop_time_val - start_time_val;
 }
 
@@ -153,6 +157,7 @@ portable_fini(core_portable *p)
 {
     p->portable_id = 0;
 
+#ifdef PERF_EXT
     /* ---- pipeline performance report (v0.4p, 4-stage) ----
        No fixed-cycle model any more: the counters below are direct hardware
        events, so CPI = cycles/instret and the extra cycles decompose into
@@ -198,6 +203,8 @@ portable_fini(core_portable *p)
                   (unsigned long)(run_cycles - inst),
                   (unsigned long)(stalls + flush));
     }
+
+#endif
 
     GPIO_LED = 0;
 }

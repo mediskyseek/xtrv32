@@ -377,6 +377,7 @@ module myxtrv32_core_v4p (
     //------------------------------------------------------------------
     // Performance event outputs
     //------------------------------------------------------------------
+`ifdef PERF_EXT
     // Registered so the counters' clock-enable pins do not sit on the same
     // combinational path as the branch compare / pc update.
     reg ev_flush_r, ev_br_taken_r, ev_br_not_r;
@@ -406,6 +407,15 @@ module myxtrv32_core_v4p (
     assign ev_stall_ld  = ev_stall_ld_r;
     assign ev_stall_br  = ev_stall_br_r;
     assign ev_stall_md  = ev_stall_md_r;
+`else
+    // release build: no performance counters, no extra flops
+    assign ev_flush     = 1'b0;
+    assign ev_br_taken  = 1'b0;
+    assign ev_br_not    = 1'b0;
+    assign ev_stall_ld  = 1'b0;
+    assign ev_stall_br  = 1'b0;
+    assign ev_stall_md  = 1'b0;
+`endif
 
     //------------------------------------------------------------------
     // MUL / DIV sequencing

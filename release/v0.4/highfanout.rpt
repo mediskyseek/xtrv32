@@ -1,0 +1,36 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2024.2 (win64) Build 5239630 Fri Nov 08 22:35:27 MST 2024
+| Date         : Wed Nov  4 14:38:01 2026
+| Host         : DESKTOP-CCFDOHA running 64-bit major release  (build 9200)
+| Command      : report_high_fanout_nets -max_nets 15 -file D:/dev27/z7skytum/myxtrv32/out/v4p_highfanout.rpt
+| Design       : myxtrv32_top_v4
+| Device       : xc7z020
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+High Fan-out Nets Information
+
+1. Summary
+----------
+
++-------------------------------+--------+-------------+
+| Net Name                      | Fanout | Driver Type |
++-------------------------------+--------+-------------+
+| rst                           |   1088 | FDRE        |
+| u_core/stall_d                |    351 | FDRE        |
+| u_core/ex_mem_rd              |    264 | LUT2        |
+| u_core/mul_f3_r[0]_i_1_n_0    |    214 | LUT3        |
+| u_core/ex_mem_alu[31]_i_5_n_0 |    196 | LUT6        |
+| u_core/rs2[2]                 |    140 | LUT3        |
+| u_core/ex_mem_alu[30]_i_2_n_0 |    133 | LUT2        |
+| u_core/rs2[0]                 |    133 | LUT3        |
+| u_core/rs2[1]                 |    127 | LUT3        |
+| u_core/sh_r[2]                |    119 | LUT6        |
+| u_core/rs2[3]                 |    118 | LUT3        |
+| u_core/rs2[4]                 |    118 | LUT3        |
+| u_core/sh_r[1]                |    112 | LUT6        |
+| u_core/sh_r[0]                |    107 | LUT6        |
+| u_core/mem_wb_rd[0]           |     98 | FDRE        |
++-------------------------------+--------+-------------+
+
+

@@ -71,6 +71,7 @@ def main() -> int:
     ap.add_argument("--build-dir", default=None)
     ap.add_argument("--rom-out", default="rtl/myxtrv32_rom.v")
     ap.add_argument("-O", dest="opt", default="O2", help="optimisation level (O2/O3/Os)")
+    ap.add_argument("--perf", action="store_true", help="enable PERF_EXT extended counters")
     args = ap.parse_args()
 
     build = (ROOT / args.build_dir).resolve() if args.build_dir else (SW / f"build_{args.mode}").resolve()
@@ -126,6 +127,9 @@ def main() -> int:
         cmd = [gcc] + common + ["-o", str(elf)] + sources + ["-lgcc"]
     else:
         cmd = [gcc] + common + ["-o", str(elf), str(SW / "sim_test.S")]
+
+    if args.perf:
+        cmd.insert(cmd.index("-o"), "-DPERF_EXT")
 
     run(cmd, cwd=SW)
     run([objcopy, "-O", "binary", str(elf), str(binf)], cwd=build)

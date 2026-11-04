@@ -17,6 +17,11 @@ if {[llength $argv] > 0} {
 } else {
     set top "myxtrv32_top"
 }
+# optional second argument: "perf" enables the extended performance counters
+set perf_ext 0
+if {[llength $argv] > 1 && [lindex $argv 1] eq "perf"} {
+    set perf_ext 1
+}
 
 file mkdir $out
 
@@ -26,6 +31,13 @@ puts "   part : $part"
 puts "   top  : $top"
 
 #---------------------------------------------------------------- sources
+if {$perf_ext} {
+    set_property verilog_define {PERF_EXT} [current_fileset]
+    puts "   perf : extended counters ENABLED"
+} else {
+    puts "   perf : extended counters disabled (use -tclargs $top perf to enable)"
+}
+
 read_verilog "$rtl/myxtrv32_uart_tx.v"
 read_verilog "$rtl/myxtrv32_ram.v"
 read_verilog "$rtl/myxtrv32_rom.v"

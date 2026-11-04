@@ -207,6 +207,7 @@ module myxtrv32_top_v4 #(
     reg [31:0] perf_br;
     reg [31:0] perf_mul;
     reg [31:0] perf_div;
+`ifdef PERF_EXT
     reg [31:0] perf_btaken;
     reg [31:0] perf_bnot;
     reg [31:0] perf_st_ld;
@@ -251,6 +252,8 @@ module myxtrv32_top_v4 #(
         end
     end
 
+`endif
+
     reg [31:0] perf_read;
     always @* begin
         case (A[5:2])
@@ -261,14 +264,22 @@ module myxtrv32_top_v4 #(
             4'd4:  perf_read = perf_br;
             4'd5:  perf_read = perf_mul;
             4'd6:  perf_read = perf_div;
-            4'd7:  perf_read = perf_btaken;
-            4'd8:  perf_read = perf_bnot;
-            4'd9:  perf_read = perf_st_ld;
-            4'd10: perf_read = perf_st_br;
-            4'd11: perf_read = perf_st_md;
-            4'd12: perf_read = perf_flush;
+
+
+
+
+
+
             default: perf_read = 32'd0;
-        endcase
+`ifdef PERF_EXT
+                4'd7:  perf_read = perf_btaken;
+                4'd8:  perf_read = perf_bnot;
+                4'd9:  perf_read = perf_st_ld;
+                4'd10: perf_read = perf_st_br;
+                4'd11: perf_read = perf_st_md;
+                4'd12: perf_read = perf_flush;
+`endif
+            endcase
     end
 
     //------------------------------------------------------------------

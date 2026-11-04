@@ -1,0 +1,12 @@
+MyXTRV32 v0.4 release
+=====================
+Architecture : 4-stage pipeline (IF | ID/EX | MEM | WB), RV32IM
+Clock        : 100 MHz (xc7z020clg400-2)
+WNS          : +0.044 ns (release build, PERF_EXT disabled)
+CPI          : 1.315
+CoreMark     : 35.53 (600 iterations / 16.8885 s), 0.355 CoreMark/MHz
+CRC          : crclist 0xd4b0, crcmatrix 0xbe52, crcstate 0x5e47  (all correct)
+Resources    : see utilization.rpt
+Build        : vivado -mode batch -source scripts/build.tcl -tclargs myxtrv32_top_v4
+Perf counters: rebuild with '-tclargs myxtrv32_top_v4 perf' (PERF_EXT), WNS -0.225,
+               see perf_ext_stats.log for the measured breakdown.
